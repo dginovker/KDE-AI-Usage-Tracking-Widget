@@ -6,26 +6,21 @@ import datetime as dt
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
 
-CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-CLAUDE_STATUSLINE_CACHE = CACHE_DIR / "claude-statusline.json"
-
-HEALTH_COLORS = {
-    "ok": "#27ae60",
-    "warning": "#fdbc4b",
-    "critical": "#da4453",
-    "missing": "",
-}
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
+CLAUDE_CACHE = CACHE / "claude-statusline.json"
+COLORS = {"ok": "#27ae60", "warning": "#fdbc4b", "critical": "#da4453", "missing": ""}
 
 
-def local_now() -> dt.datetime:
+def now() -> dt.datetime:
     return dt.datetime.now().astimezone()
 
 
-def parse_iso(value: str | None) -> dt.datetime | None:
+def parse_time(value: str | None) -> dt.datetime | None:
     if not value:
         return None
     try:
@@ -34,109 +29,105 @@ def parse_iso(value: str | None) -> dt.datetime | None:
         return None
 
 
-def epoch_to_local(value: int | float | None) -> dt.datetime | None:
-    if value is None:
-        return None
+def local_epoch(epoch: Any) -> dt.datetime | None:
     try:
-        return dt.datetime.fromtimestamp(float(value), tz=dt.timezone.utc).astimezone()
-    except (OSError, OverflowError, ValueError):
+        return dt.datetime.fromtimestamp(float(epoch), dt.timezone.utc).astimezone()
+    except (TypeError, ValueError, OSError, OverflowError):
         return None
 
 
-def reset_labels(value: int | float | None) -> dict[str, str | None]:
-    reset = epoch_to_local(value)
+def reset_info(epoch: Any) -> dict[str, Any]:
+    reset = local_epoch(epoch)
     if reset is None:
-        return {"at": None, "short": None, "relative": None, "days": None, "days_label": "--"}
+        return {"resets_at_local": None, "reset_short": None, "reset_days_label": "?"}
 
-    now = local_now()
-    seconds = max(0, int((reset - now).total_seconds()))
-    if reset.date() == now.date():
+    seconds = max(0, int((reset - now()).total_seconds()))
+    if reset.date() == now().date():
         short = reset.strftime("%H:%M")
-    elif reset.date() == (now + dt.timedelta(days=1)).date():
+    elif reset.date() == (now() + dt.timedelta(days=1)).date():
         short = "Tomorrow " + reset.strftime("%H:%M")
     elif seconds < 7 * 86400:
         short = reset.strftime("%a %H:%M")
     else:
         short = reset.strftime("%b %-d %H:%M")
 
-    if seconds < 60:
-        relative = "now"
-    elif seconds < 3600:
-        relative = f"{seconds // 60}m"
-    elif seconds < 86400:
-        relative = f"{seconds // 3600}h {(seconds % 3600) // 60}m"
-    else:
-        relative = f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
-
-    days = seconds // 86400
     return {
-        "at": reset.isoformat(timespec="seconds"),
-        "short": short,
-        "relative": relative,
-        "days": str(days),
-        "days_label": str(days),
+        "resets_at_local": reset.isoformat(timespec="seconds"),
+        "reset_short": short,
+        "reset_days_label": str(seconds // 86400),
     }
 
 
-def percent_remaining(used: Any) -> float | None:
+def remaining(used: Any) -> float | None:
     try:
         return max(0.0, 100.0 - float(used))
     except (TypeError, ValueError):
         return None
 
 
-def inferred_window_minutes(key: str, value: dict[str, Any]) -> int | None:
-    window = value.get("window_minutes")
-    if window is not None:
-        try:
-            return int(window)
-        except (TypeError, ValueError):
-            pass
-    if key in {"primary", "five_hour"}:
-        return 300
-    if key in {"secondary", "seven_day"}:
-        return 10080
-    return None
+def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
+    if payload.get("window_minutes") is not None:
+        return int(payload["window_minutes"])
+    return {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}.get(name)
 
 
-def quota_health(remaining: float | None, reset_epoch: Any, window_minutes: int | None) -> dict[str, Any]:
-    if remaining is None:
-        return {
-            "expected_remaining_percent": None,
-            "pace_delta_percent": None,
-            "state": "missing",
-            "color": HEALTH_COLORS["missing"],
-        }
+def health(left: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
+    if left is None:
+        return {"expected_remaining_percent": None, "pace_delta_percent": None, "state": "missing", "color": ""}
 
-    expected: float | None = None
-    if reset_epoch is not None and window_minutes:
-        try:
-            seconds_left = max(0.0, float(reset_epoch) - local_now().timestamp())
-            expected = max(0.0, min(100.0, seconds_left / (window_minutes * 60) * 100))
-        except (TypeError, ValueError):
-            expected = None
+    expected = None
+    if reset_epoch is not None and window:
+        expected = max(0.0, min(100.0, (float(reset_epoch) - now().timestamp()) / (window * 60) * 100))
 
-    if remaining <= 0:
+    if left <= 0:
         state = "critical"
-    elif expected is not None:
-        if remaining >= expected * 0.9:
-            state = "ok"
-        elif remaining >= max(5.0, expected * 0.5):
-            state = "warning"
-        else:
-            state = "critical"
-    elif remaining < 15:
-        state = "critical"
-    elif remaining < 40:
+    elif expected is None:
+        state = "critical" if left < 15 else "warning" if left < 40 else "ok"
+    elif left >= expected * 0.9:
+        state = "ok"
+    elif left >= max(5.0, expected * 0.5):
         state = "warning"
     else:
-        state = "ok"
+        state = "critical"
 
     return {
         "expected_remaining_percent": round(expected, 1) if expected is not None else None,
-        "pace_delta_percent": round(remaining - expected, 1) if expected is not None else None,
+        "pace_delta_percent": round(left - expected, 1) if expected is not None else None,
         "state": state,
-        "color": HEALTH_COLORS[state],
+        "color": COLORS[state],
+    }
+
+
+def blank_quota() -> dict[str, Any]:
+    return {
+        "used_percent": None,
+        "remaining_percent": None,
+        "window_minutes": None,
+        "resets_at": None,
+        **reset_info(None),
+        **health(None, None, None),
+    }
+
+
+def quota(raw_limits: dict[str, Any] | None, name: str, event_time: dt.datetime | None) -> dict[str, Any]:
+    payload = (raw_limits or {}).get(name)
+    if not isinstance(payload, dict):
+        return blank_quota()
+
+    reset_epoch = payload.get("resets_at")
+    if reset_epoch is None and payload.get("resets_in_seconds") is not None and event_time is not None:
+        reset_epoch = event_time.timestamp() + float(payload["resets_in_seconds"])
+
+    used = payload.get("used_percent", payload.get("used_percentage"))
+    left = remaining(used)
+    window = window_minutes(name, payload)
+    return {
+        "used_percent": used,
+        "remaining_percent": left,
+        "window_minutes": window,
+        "resets_at": reset_epoch,
+        **reset_info(reset_epoch),
+        **health(left, reset_epoch, window),
     }
 
 
@@ -147,185 +138,99 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def read_jsonl(path: Path):
+def jsonl(path: Path):
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
+        with path.open("r", encoding="utf-8", errors="replace") as lines:
+            for line in lines:
                 try:
                     yield json.loads(line)
                 except json.JSONDecodeError:
-                    continue
+                    pass
     except OSError:
         return
 
 
-def sqlite_ro(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def latest_token_event(paths: list[Path]) -> tuple[dict[str, Any] | None, dt.datetime | None]:
+    latest, latest_time = None, dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    for path in paths:
+        for obj in jsonl(path):
+            payload = obj.get("payload") or {}
+            when = parse_time(obj.get("timestamp"))
+            if obj.get("type") == "event_msg" and payload.get("type") == "token_count" and when and when > latest_time:
+                latest, latest_time = payload, when
+    return latest, latest_time if latest else None
 
 
-def normalize_rate_limits(raw: dict[str, Any] | None, event_time: dt.datetime | None) -> dict[str, Any] | None:
-    if not raw:
-        return None
-    normalized: dict[str, Any] = {
-        "limit_id": raw.get("limit_id"),
-        "plan_type": raw.get("plan_type"),
-        "rate_limit_reached_type": raw.get("rate_limit_reached_type"),
+def codex_paths(home: Path, thread_path: Path | None, days: int) -> list[Path]:
+    if thread_path and thread_path.exists():
+        return [thread_path]
+    root = home / "sessions"
+    cutoff = now().timestamp() - days * 86400
+    return [p for p in root.rglob("*.jsonl") if root.exists() and p.stat().st_mtime >= cutoff]
+
+
+def codex(days: int) -> dict[str, Any]:
+    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    thread_path = None
+    db = home / "state_5.sqlite"
+    if db.exists():
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+                row = conn.execute("select rollout_path from threads order by updated_at_ms desc limit 1").fetchone()
+                thread_path = Path(row[0]) if row and row[0] else None
+        except sqlite3.Error:
+            pass
+
+    payload, when = latest_token_event(codex_paths(home, thread_path, days))
+    limits = (payload or {}).get("rate_limits")
+    return {
+        "available": bool(payload or thread_path),
+        "current": quota(limits, "primary", when),
+        "weekly": quota(limits, "secondary", when),
     }
-    for key in ("primary", "secondary", "five_hour", "seven_day"):
-        value = raw.get(key)
-        if not isinstance(value, dict):
-            continue
-        used = value.get("used_percent", value.get("used_percentage"))
-        reset_epoch = value.get("resets_at")
-        if reset_epoch is None and value.get("resets_in_seconds") is not None and event_time is not None:
-            reset_epoch = event_time.timestamp() + float(value["resets_in_seconds"])
-        labels = reset_labels(reset_epoch)
-        remaining = percent_remaining(used)
-        window = inferred_window_minutes(key, value)
-        health = quota_health(remaining, reset_epoch, window)
-        normalized[key] = {
-            "used_percent": used,
-            "remaining_percent": remaining,
-            "window_minutes": window,
-            "resets_at": reset_epoch,
-            "resets_at_local": labels["at"],
-            "reset_short": labels["short"],
-            "reset_relative": labels["relative"],
-            "reset_days": labels["days"],
-            "reset_days_label": labels["days_label"],
-            **health,
-        }
-    return normalized
 
 
-def quota_item(rate_limits: dict[str, Any] | None, key: str) -> dict[str, Any]:
-    item = (rate_limits or {}).get(key)
-    if not isinstance(item, dict):
-        return {
-            "used_percent": None,
-            "remaining_percent": None,
-            "window_minutes": None,
-            "resets_at_local": None,
-            "reset_short": None,
-            "reset_relative": None,
-            "reset_days": None,
-            "reset_days_label": "--",
-            "expected_remaining_percent": None,
-            "pace_delta_percent": None,
-            "state": "missing",
-            "color": HEALTH_COLORS["missing"],
-        }
-    return item
+def claude() -> dict[str, Any]:
+    cached = read_json(CLAUDE_CACHE) or {}
+    when = parse_time(cached.get("_captured_at"))
+    limits = cached.get("rate_limits")
+    return {
+        "available": isinstance(limits, dict),
+        "current": quota(limits, "five_hour", when),
+        "weekly": quota(limits, "seven_day", when),
+    }
 
 
-def codex_thread(codex_home: Path) -> dict[str, Any] | None:
-    db = codex_home / "state_5.sqlite"
-    if not db.exists():
-        return None
-    thread_id = os.environ.get("CODEX_THREAD_ID")
-    query = """
-        select id, rollout_path, created_at_ms, updated_at_ms, model, cwd, title, tokens_used
-        from threads
-    """
-    params: tuple[Any, ...] = ()
-    if thread_id:
-        query += " where id = ?"
-        params = (thread_id,)
-    query += " order by updated_at_ms desc limit 1"
+def snapshot(days: int) -> int:
+    print(json.dumps({"generated_at": now().isoformat(timespec="seconds"), "codex": codex(days), "claude": claude()}, separators=(",", ":")))
+    return 0
+
+
+def capture_claude_statusline() -> int:
     try:
-        with sqlite_ro(db) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(query, params).fetchone()
-    except sqlite3.Error:
-        return None
-    return dict(row) if row else None
-
-
-def codex_token_events(path: Path):
-    for obj in read_jsonl(path):
-        if obj.get("type") != "event_msg":
-            continue
-        payload = obj.get("payload") or {}
-        if payload.get("type") != "token_count":
-            continue
-        timestamp = parse_iso(obj.get("timestamp"))
-        info = payload.get("info") or {}
-        total_usage = info.get("total_token_usage") or {}
-        yield {
-            "timestamp": timestamp,
-            "total_tokens": total_usage.get("total_tokens"),
-            "token_usage": total_usage or None,
-            "model_context_window": info.get("model_context_window"),
-            "rate_limits": normalize_rate_limits(payload.get("rate_limits"), timestamp),
-        }
-
-
-def latest_codex_event(path: Path | None, codex_home: Path, days: int) -> dict[str, Any] | None:
-    if path and path.exists():
-        paths = [path]
-    else:
-        root = codex_home / "sessions"
-        if not root.exists():
-            return None
-        cutoff = local_now().timestamp() - days * 86400
-        paths = [candidate for candidate in root.rglob("*.jsonl") if candidate.stat().st_mtime >= cutoff]
-
-    latest: dict[str, Any] | None = None
-    min_time = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
-    for candidate in paths:
-        for event in codex_token_events(candidate):
-            if (event["timestamp"] or min_time) > ((latest or {}).get("timestamp") or min_time):
-                latest = event
-    return latest
-
-
-def codex_snapshot(days: int) -> dict[str, Any]:
-    codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
-    thread = codex_thread(codex_home)
-    rollout_path = Path(thread["rollout_path"]) if thread and thread.get("rollout_path") else None
-    current_event = latest_codex_event(rollout_path, codex_home, days)
-    latest_event = latest_codex_event(None, codex_home, days)
-    limits = (current_event or {}).get("rate_limits") or (latest_event or {}).get("rate_limits")
-    return {
-        "available": thread is not None or current_event is not None or latest_event is not None,
-        "current": quota_item(limits, "primary"),
-        "weekly": quota_item(limits, "secondary"),
-        "plan_type": (limits or {}).get("plan_type"),
-        "source": "codex rollout",
-    }
-
-
-def claude_snapshot() -> dict[str, Any]:
-    cached = read_json(CLAUDE_STATUSLINE_CACHE)
-    captured_at = parse_iso((cached or {}).get("_captured_at"))
-    limits = normalize_rate_limits((cached or {}).get("rate_limits"), captured_at)
-    return {
-        "available": limits is not None,
-        "current": quota_item(limits, "five_hour"),
-        "weekly": quota_item(limits, "seven_day"),
-        "captured_at": (cached or {}).get("_captured_at"),
-        "source": "claude statusline" if limits else "missing statusline",
-    }
+        data = json.loads(sys.stdin.read())
+    except json.JSONDecodeError:
+        return 0
+    data["_captured_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    tmp = CLAUDE_CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(CLAUDE_CACHE)
+    model = (data.get("model") or {}).get("display_name") or (data.get("model") or {}).get("id") or "Claude"
+    limits = data.get("rate_limits") or {}
+    five = (limits.get("five_hour") or {}).get("used_percentage", "--")
+    week = (limits.get("seven_day") or {}).get("used_percentage", "--")
+    print(f"{model} | 5h {five}% | 7d {week}%")
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days-scan", type=int, default=14)
+    parser.add_argument("--capture-claude-statusline", action="store_true")
     parser.add_argument("--stamp", help=argparse.SUPPRESS)
     args = parser.parse_args()
-
-    codex = codex_snapshot(args.days_scan)
-    claude = claude_snapshot()
-    report = {
-        "generated_at": local_now().isoformat(timespec="seconds"),
-        "codex": codex,
-        "claude": claude,
-    }
-    print(json.dumps(report, separators=(",", ":")))
-    return 0
+    return capture_claude_statusline() if args.capture_claude_statusline else snapshot(args.days_scan)
 
 
 if __name__ == "__main__":

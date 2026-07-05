@@ -1,53 +1,34 @@
-# KDE/Codex/Claude Usage Probe
+# AI Usage Rings
 
-This workspace contains a Plasma widget plus two local diagnostic tools:
+KDE Plasma 6 applet for showing Claude Code and Codex quota pressure in a panel.
 
-- `ai_usage_report.py` prints the current KDE panel widgets plus local Codex and Claude Code usage.
-- `claude_statusline_capture.py` is an optional Claude Code status-line command that stores the latest Claude rate-limit payload in `~/.cache/ai-usage/claude-statusline.json`.
-- `plasmoid/` is the KDE Plasma 6 applet package for `local.aiusage.rings`.
+The panel shows two weekly quota rings: Claude on the left, Codex on the right. The number inside each ring is whole days until that weekly window resets. Colors are pace-aware, so low remaining quota can still be green when the reset is soon.
 
-Run:
-
+## Install
 ```bash
-./ai_usage_report.py
-./ai_usage_report.py --json
+./install-widget.sh
 ```
 
-Codex usage comes from `~/.codex/state_5.sqlite` and `~/.codex/sessions/**/*.jsonl`. The Codex rollout JSONL includes account rate-limit percentages when Codex has received them.
+Applet id: `local.aiusage.rings`.
 
-Claude token usage comes from `~/.claude/projects/**/*.jsonl`. If `CLAUDE_SESSION_ID` is not set and no status-line cache exists, the reporter uses the latest logged Claude session rather than claiming an active foreground session. Claude Code subscription remaining percentages are only available while Claude is running, through the status-line JSON. To capture them, add this to `~/.claude/settings.json`:
+## Claude Usage
+
+Claude Code exposes quota through its status-line payload:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "/home/wacket/Projects/KDEWidgetClaudeCodexUsage/claude_statusline_capture.py",
+    "command": "/home/wacket/.local/share/plasma/plasmoids/local.aiusage.rings/contents/code/widget_snapshot.py --capture-claude-statusline",
     "padding": 0,
     "refreshInterval": 600
   }
 }
 ```
 
-After the next Claude Code response, rerun `./ai_usage_report.py`.
+## Data Sources
 
-## Plasma widget
+- Codex: `~/.codex/state_5.sqlite` and `~/.codex/sessions/**/*.jsonl`
+- Claude: `~/.cache/ai-usage/claude-statusline.json`
 
-Install or upgrade the widget:
-
-```bash
-./install-widget.sh
-```
-
-The installed applet id is `local.aiusage.rings` and the package path is:
-
-```text
-~/.local/share/plasma/plasmoids/local.aiusage.rings/
-```
-
-The panel glyph is two side-by-side weekly-remaining rings:
-
-- left ring: Claude weekly remaining
-- right ring: Codex weekly remaining
-- center text in each ring: whole days until that provider's weekly reset
-
-It refreshes every 10 minutes and once when the popup opens. The popup shows one visual panel per provider, with the weekly reset ring plus current-window and weekly quota bars.
+Refresh: every 10 minutes and once when opened.
