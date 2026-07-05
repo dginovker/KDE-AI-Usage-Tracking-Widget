@@ -34,11 +34,22 @@ ColumnLayout {
         return "#27ae60";
     }
 
-    function percentText(value) {
+    function usedText(value) {
         if (value < 0) {
             return "--";
         }
-        return Math.round(value).toString() + "%";
+        return i18n("%1 used", Math.round(value).toString() + "%");
+    }
+
+    function resetText() {
+        if (!quota || !quota.reset_short) {
+            return "--";
+        }
+        var reset = String(quota.reset_short);
+        if (reset.indexOf("Tomorrow ") === 0) {
+            reset = "tomorrow " + reset.substring(9);
+        }
+        return i18n("Resets %1", reset);
     }
 
     RowLayout {
@@ -52,7 +63,7 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: root.percentText(root.used())
+            text: root.usedText(root.used())
             opacity: root.used() < 0 ? 0.55 : 1
         }
     }
@@ -75,7 +86,7 @@ ColumnLayout {
     }
 
     PlasmaComponents3.Label {
-        text: quota && quota.reset_short ? quota.reset_short : "--"
+        text: root.resetText()
         opacity: 0.7
         font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
         Layout.fillWidth: true

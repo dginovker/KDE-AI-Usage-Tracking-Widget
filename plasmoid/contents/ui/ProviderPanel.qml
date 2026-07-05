@@ -38,6 +38,18 @@ ColumnLayout {
         return "?";
     }
 
+    function weeklyResetText() {
+        var reset = root.quota("weekly").reset_short;
+        if (!reset) {
+            return "--";
+        }
+        reset = String(reset);
+        if (reset.indexOf("Tomorrow ") === 0) {
+            reset = "tomorrow " + reset.substring(9);
+        }
+        return i18n("Resets %1", reset);
+    }
+
     PlasmaComponents3.Label {
         text: root.title
         font.bold: true
@@ -55,7 +67,7 @@ ColumnLayout {
     }
 
     PlasmaComponents3.Label {
-        text: root.quota("weekly").reset_short || "--"
+        text: root.weeklyResetText()
         opacity: 0.72
         horizontalAlignment: Text.AlignHCenter
         Layout.fillWidth: true
