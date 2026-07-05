@@ -1,8 +1,14 @@
 # AI Usage Rings
 
-KDE Plasma 6 applet for showing Claude Code and Codex quota pressure in a panel.
+KDE Plasma 6 applet for showing Claude Code and Codex usage pace in a panel.
 
-The panel shows two weekly quota rings: Claude on the left, Codex on the right. The number inside each ring is whole days until that weekly window resets. Colors are pace-aware, so low remaining quota can still be green when the reset is soon.
+The panel shows two weekly usage rings: Claude on the left, Codex on the right. The number inside each ring is whole days until that weekly window resets. Rings fill as usage increases.
+
+Colors compare projected usage against an 80% weekly target:
+
+- green: on pace
+- amber: close
+- purple: under target
 
 ## Install
 ```bash

@@ -13,7 +13,8 @@ from typing import Any
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
 CLAUDE_CACHE = CACHE / "claude-statusline.json"
-COLORS = {"ok": "#27ae60", "warning": "#fdbc4b", "critical": "#da4453", "missing": ""}
+COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#9b59b6", "missing": ""}
+TARGET_USED = 80.0
 
 
 def now() -> dt.datetime:
@@ -58,9 +59,9 @@ def reset_info(epoch: Any) -> dict[str, Any]:
     }
 
 
-def remaining(used: Any) -> float | None:
+def used_value(used: Any) -> float | None:
     try:
-        return max(0.0, 100.0 - float(used))
+        return max(0.0, min(100.0, float(used)))
     except (TypeError, ValueError):
         return None
 
@@ -71,28 +72,35 @@ def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
     return {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}.get(name)
 
 
-def health(left: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
-    if left is None:
-        return {"expected_remaining_percent": None, "pace_delta_percent": None, "state": "missing", "color": ""}
+def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
+    if used is None:
+        return {"target_used_percent": None, "projected_used_percent": None, "pace_delta_percent": None, "state": "missing", "color": ""}
 
-    expected = None
+    target_now = projected = None
     if reset_epoch is not None and window:
-        expected = max(0.0, min(100.0, (float(reset_epoch) - now().timestamp()) / (window * 60) * 100))
+        left_fraction = max(0.0, min(1.0, (float(reset_epoch) - now().timestamp()) / (window * 60)))
+        elapsed = max(0.0, 1.0 - left_fraction)
+        target_now = TARGET_USED * elapsed
+        projected = 100.0 if elapsed <= 0 else min(100.0, used / elapsed)
 
-    if left <= 0:
-        state = "critical"
-    elif expected is None:
-        state = "critical" if left < 15 else "warning" if left < 40 else "ok"
-    elif left >= expected * 0.9:
+    if projected is not None:
+        if projected >= TARGET_USED:
+            state = "ok"
+        elif projected >= TARGET_USED * 0.8:
+            state = "near"
+        else:
+            state = "under"
+    elif used >= TARGET_USED:
         state = "ok"
-    elif left >= max(5.0, expected * 0.5):
-        state = "warning"
+    elif used >= TARGET_USED * 0.8:
+        state = "near"
     else:
-        state = "critical"
+        state = "under"
 
     return {
-        "expected_remaining_percent": round(expected, 1) if expected is not None else None,
-        "pace_delta_percent": round(left - expected, 1) if expected is not None else None,
+        "target_used_percent": round(target_now, 1) if target_now is not None else TARGET_USED,
+        "projected_used_percent": round(projected, 1) if projected is not None else None,
+        "pace_delta_percent": round(used - target_now, 1) if target_now is not None else None,
         "state": state,
         "color": COLORS[state],
     }
@@ -101,7 +109,6 @@ def health(left: float | None, reset_epoch: Any, window: int | None) -> dict[str
 def blank_quota() -> dict[str, Any]:
     return {
         "used_percent": None,
-        "remaining_percent": None,
         "window_minutes": None,
         "resets_at": None,
         **reset_info(None),
@@ -119,15 +126,14 @@ def quota(raw_limits: dict[str, Any] | None, name: str, event_time: dt.datetime 
         reset_epoch = event_time.timestamp() + float(payload["resets_in_seconds"])
 
     used = payload.get("used_percent", payload.get("used_percentage"))
-    left = remaining(used)
+    used = used_value(used)
     window = window_minutes(name, payload)
     return {
         "used_percent": used,
-        "remaining_percent": left,
         "window_minutes": window,
         "resets_at": reset_epoch,
         **reset_info(reset_epoch),
-        **health(left, reset_epoch, window),
+        **health(used, reset_epoch, window),
     }
 
 
@@ -220,7 +226,7 @@ def capture_claude_statusline() -> int:
     limits = data.get("rate_limits") or {}
     five = (limits.get("five_hour") or {}).get("used_percentage", "--")
     week = (limits.get("seven_day") or {}).get("used_percentage", "--")
-    print(f"{model} | 5h {five}% | 7d {week}%")
+    print(f"{model} | 5h used {five}% | 7d used {week}%")
     return 0
 
 

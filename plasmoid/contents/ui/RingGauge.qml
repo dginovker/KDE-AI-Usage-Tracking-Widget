@@ -22,10 +22,10 @@ Item {
         if (accentColor.length > 0) {
             return accentColor;
         }
-        if (value < 15) {
-            return "#da4453";
+        if (value < 64) {
+            return "#9b59b6";
         }
-        if (value < 40) {
+        if (value < 80) {
             return "#fdbc4b";
         }
         return "#27ae60";

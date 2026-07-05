@@ -11,11 +11,11 @@ ColumnLayout {
 
     spacing: Kirigami.Units.smallSpacing / 2
 
-    function remaining() {
-        if (!quota || typeof quota.remaining_percent !== "number") {
+    function used() {
+        if (!quota || typeof quota.used_percent !== "number") {
             return -1;
         }
-        return quota.remaining_percent;
+        return quota.used_percent;
     }
 
     function colorFor(value) {
@@ -25,10 +25,10 @@ ColumnLayout {
         if (quota && quota.color) {
             return quota.color;
         }
-        if (value < 15) {
-            return "#da4453";
+        if (value < 64) {
+            return "#9b59b6";
         }
-        if (value < 40) {
+        if (value < 80) {
             return "#fdbc4b";
         }
         return "#27ae60";
@@ -52,8 +52,8 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: root.percentText(root.remaining())
-            opacity: root.remaining() < 0 ? 0.55 : 1
+            text: root.percentText(root.used())
+            opacity: root.used() < 0 ? 0.55 : 1
         }
     }
 
@@ -67,10 +67,10 @@ ColumnLayout {
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            width: parent.width * Math.max(0, Math.min(100, root.remaining())) / 100
+            width: parent.width * Math.max(0, Math.min(100, root.used())) / 100
             radius: parent.radius
-            color: root.colorFor(root.remaining())
-            visible: root.remaining() >= 0
+            color: root.colorFor(root.used())
+            visible: root.used() >= 0
         }
     }
 

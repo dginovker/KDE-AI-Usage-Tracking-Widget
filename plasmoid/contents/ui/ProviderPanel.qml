@@ -21,10 +21,10 @@ ColumnLayout {
 
     function weeklyPercent() {
         var weekly = quota("weekly");
-        if (typeof weekly.remaining_percent !== "number") {
+        if (typeof weekly.used_percent !== "number") {
             return -1;
         }
-        return weekly.remaining_percent;
+        return weekly.used_percent;
     }
 
     function weeklyDays() {

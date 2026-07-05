@@ -40,7 +40,7 @@ PlasmoidItem {
             RingGauge {
                 Layout.preferredWidth: Math.max(16, compact.height - 2)
                 Layout.preferredHeight: Layout.preferredWidth
-                percent: root.percent(root.value(["claude", "weekly", "remaining_percent"]))
+                percent: root.percent(root.value(["claude", "weekly", "used_percent"]))
                 centerText: root.resetDaysText("claude")
                 accentColor: root.value(["claude", "weekly", "color"]) || ""
             }
@@ -48,7 +48,7 @@ PlasmoidItem {
             RingGauge {
                 Layout.preferredWidth: Math.max(16, compact.height - 2)
                 Layout.preferredHeight: Layout.preferredWidth
-                percent: root.percent(root.value(["codex", "weekly", "remaining_percent"]))
+                percent: root.percent(root.value(["codex", "weekly", "used_percent"]))
                 centerText: root.resetDaysText("codex")
                 accentColor: root.value(["codex", "weekly", "color"]) || ""
             }
@@ -162,7 +162,14 @@ PlasmoidItem {
         }
     }
 
-    Component.onCompleted: refreshData()
+    Component.onCompleted: {
+        var configureAction = Plasmoid.internalAction("configure");
+        if (configureAction) {
+            configureAction.visible = false;
+            configureAction.enabled = false;
+        }
+        refreshData();
+    }
 
     function fileUrlToPath(url) {
         var text = url.toString();
@@ -211,10 +218,10 @@ PlasmoidItem {
     }
 
     function tooltipText() {
-        var claudeWeek = percentLabel(value(["claude", "weekly", "remaining_percent"]));
-        var codexWeek = percentLabel(value(["codex", "weekly", "remaining_percent"]));
+        var claudeWeek = percentLabel(value(["claude", "weekly", "used_percent"]));
+        var codexWeek = percentLabel(value(["codex", "weekly", "used_percent"]));
         var updated = updatedLabel();
-        return i18n("Claude week: %1\nCodex week: %2\nUpdated: %3", claudeWeek, codexWeek, updated);
+        return i18n("Claude week used: %1\nCodex week used: %2\nUpdated: %3", claudeWeek, codexWeek, updated);
     }
 
     function resetDaysText(providerName) {
