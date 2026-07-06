@@ -26,7 +26,7 @@ Item {
             return color;
         }
         if (value < 64) {
-            return "#9b59b6";
+            return "#3daee9";
         }
         if (value < 80) {
             return "#fdbc4b";

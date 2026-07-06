@@ -26,7 +26,7 @@ ColumnLayout {
             return quota.color;
         }
         if (value < 64) {
-            return "#9b59b6";
+            return "#3daee9";
         }
         if (value < 80) {
             return "#fdbc4b";
@@ -50,6 +50,13 @@ ColumnLayout {
             reset = "tomorrow " + reset.substring(9);
         }
         return i18n("Resets %1", reset);
+    }
+
+    function paceText() {
+        if (!quota || !quota.pace_label) {
+            return "--";
+        }
+        return String(quota.pace_label);
     }
 
     RowLayout {
@@ -85,11 +92,22 @@ ColumnLayout {
         }
     }
 
-    PlasmaComponents3.Label {
-        text: root.resetText()
-        opacity: 0.7
-        font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
+    RowLayout {
         Layout.fillWidth: true
-        horizontalAlignment: Text.AlignRight
+        spacing: Kirigami.Units.smallSpacing
+
+        PlasmaComponents3.Label {
+            text: root.paceText()
+            opacity: 0.78
+            elide: Text.ElideRight
+            font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
+            Layout.fillWidth: true
+        }
+
+        PlasmaComponents3.Label {
+            text: root.resetText()
+            opacity: 0.7
+            font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
+        }
     }
 }

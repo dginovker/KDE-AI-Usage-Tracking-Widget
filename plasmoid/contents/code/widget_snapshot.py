@@ -13,7 +13,7 @@ from typing import Any
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
 CLAUDE_CACHE = CACHE / "claude-statusline.json"
-COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#9b59b6", "missing": ""}
+COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "missing": ""}
 TARGET_USED = 80.0
 
 
@@ -66,6 +66,20 @@ def used_value(used: Any) -> float | None:
         return None
 
 
+def compact_duration(seconds: float) -> str:
+    minutes = max(1, int((seconds + 59) // 60))
+    if minutes < 90:
+        return f"{minutes}m"
+
+    hours = int((minutes + 30) // 60)
+    if hours < 36:
+        return f"{hours}h"
+
+    days = hours // 24
+    extra = hours % 24
+    return f"{days}d {extra}h" if extra and days < 3 else f"{days}d"
+
+
 def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
     if payload.get("window_minutes") is not None:
         return int(payload["window_minutes"])
@@ -74,19 +88,33 @@ def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
 
 def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
     if used is None:
-        return {"target_used_percent": None, "projected_used_percent": None, "pace_delta_percent": None, "state": "missing", "color": ""}
+        return {"target_used_percent": None, "projected_used_percent": None, "max_used_percent": None, "pace_delta_percent": None, "pace_label": "--", "state": "missing", "color": ""}
 
-    target_now = projected = None
+    target_now = projected = raw_projected = max_used = limit_early = None
     if reset_epoch is not None and window:
-        left_fraction = max(0.0, min(1.0, (float(reset_epoch) - now().timestamp()) / (window * 60)))
+        seconds_left = max(0.0, float(reset_epoch) - now().timestamp())
+        window_seconds = window * 60
+        left_fraction = max(0.0, min(1.0, seconds_left / window_seconds))
         elapsed = max(0.0, 1.0 - left_fraction)
         target_now = TARGET_USED * elapsed
-        projected = 100.0 if elapsed <= 0 else min(100.0, used / elapsed)
+        raw_projected = used if elapsed <= 0 else used / elapsed
+        projected = min(100.0, raw_projected)
+        max_used = min(100.0, used + 100.0 * left_fraction)
+        if raw_projected > 100.0:
+            limit_early = seconds_left if used >= 100.0 else seconds_left - ((100.0 - used) * window_seconds * elapsed / used)
 
-    if projected is not None:
-        if projected >= TARGET_USED:
+    expected = projected if projected is not None else used
+    if max_used is not None and max_used < TARGET_USED:
+        pace_label = f"Behind: max {round(max_used)}%"
+    elif limit_early is not None and limit_early > 0:
+        pace_label = f"Limit {compact_duration(limit_early)} early"
+    else:
+        pace_label = f"Expected {round(expected)}%"
+
+    if raw_projected is not None:
+        if raw_projected >= TARGET_USED:
             state = "ok"
-        elif projected >= TARGET_USED * 0.8:
+        elif raw_projected >= TARGET_USED * 0.8:
             state = "near"
         else:
             state = "under"
@@ -100,7 +128,9 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
     return {
         "target_used_percent": round(target_now, 1) if target_now is not None else TARGET_USED,
         "projected_used_percent": round(projected, 1) if projected is not None else None,
+        "max_used_percent": round(max_used, 1) if max_used is not None else None,
         "pace_delta_percent": round(used - target_now, 1) if target_now is not None else None,
+        "pace_label": pace_label,
         "state": state,
         "color": COLORS[state],
     }
