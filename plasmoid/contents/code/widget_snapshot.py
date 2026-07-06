@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -13,9 +14,12 @@ from typing import Any
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
 CLAUDE_CACHE = CACHE / "claude-statusline.json"
+HISTORY_CACHE = CACHE / "usage-history.json"
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "missing": ""}
 TARGET_USED = 80.0
 FULL_USED = 99.5
+HISTORY_LIMIT = 300
+MIN_CURRENT_DELTA = 4.0
 
 
 def now() -> dt.datetime:
@@ -87,7 +91,7 @@ def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
     return {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}.get(name)
 
 
-def health(used: float | None, reset_epoch: Any, window: int | None, weekly: bool = False) -> dict[str, Any]:
+def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
     if used is None:
         return {"target_used_percent": None, "projected_used_percent": None, "max_used_percent": None, "pace_delta_percent": None, "pace_label": "--", "state": "missing", "color": ""}
 
@@ -105,16 +109,12 @@ def health(used: float | None, reset_epoch: Any, window: int | None, weekly: boo
             limit_early = seconds_left if used >= 100.0 else seconds_left - ((100.0 - used) * window_seconds * elapsed / used)
 
     expected = projected if projected is not None else used
-    if weekly and max_used is not None and max_used < FULL_USED:
-        pace_label = f"Behind: max {round(max_used)}%"
-    elif limit_early is not None and limit_early > 0:
+    if limit_early is not None and limit_early > 0:
         pace_label = f"Limit {compact_duration(limit_early)} early"
     else:
         pace_label = f"Expected {round(expected)}%"
 
-    if weekly and max_used is not None and max_used < FULL_USED:
-        state = "under"
-    elif limit_early is not None and limit_early > 0:
+    if limit_early is not None and limit_early > 0:
         state = "near"
     elif raw_projected is not None:
         if raw_projected >= TARGET_USED:
@@ -168,7 +168,7 @@ def quota(raw_limits: dict[str, Any] | None, name: str, event_time: dt.datetime 
         "window_minutes": window,
         "resets_at": reset_epoch,
         **reset_info(reset_epoch),
-        **health(used, reset_epoch, window, name in ("secondary", "seven_day")),
+        **health(used, reset_epoch, window),
     }
 
 
@@ -177,6 +177,127 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def history_record(data: dict[str, Any], provider: str) -> dict[str, Any] | None:
+    provider_data = data.get(provider) or {}
+    current = provider_data.get("current") or {}
+    weekly = provider_data.get("weekly") or {}
+    current_used = safe_float(current.get("used_percent"))
+    weekly_used = safe_float(weekly.get("used_percent"))
+    current_reset = safe_float(current.get("resets_at"))
+    weekly_reset = safe_float(weekly.get("resets_at"))
+    if None in (current_used, weekly_used, current_reset, weekly_reset):
+        return None
+    return {
+        "at": data["generated_at"],
+        "current_used": current_used,
+        "current_reset": current_reset,
+        "weekly_used": weekly_used,
+        "weekly_reset": weekly_reset,
+    }
+
+
+def append_history(history: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    for provider in ("claude", "codex"):
+        record = history_record(data, provider)
+        if not record:
+            continue
+        items = history.get(provider)
+        if not isinstance(items, list):
+            items = []
+        if not items or any(record.get(key) != items[-1].get(key) for key in ("current_used", "current_reset", "weekly_used", "weekly_reset")):
+            items.append(record)
+        history[provider] = items[-HISTORY_LIMIT:]
+    return history
+
+
+def conversion_ratio(history: dict[str, Any], provider: str) -> tuple[float | None, int]:
+    items = history.get(provider)
+    if not isinstance(items, list):
+        return None, 0
+
+    ratios = []
+    for prev, current in zip(items, items[1:]):
+        if prev.get("current_reset") != current.get("current_reset") or prev.get("weekly_reset") != current.get("weekly_reset"):
+            continue
+        current_used = safe_float(current.get("current_used"))
+        prev_current_used = safe_float(prev.get("current_used"))
+        weekly_used = safe_float(current.get("weekly_used"))
+        prev_weekly_used = safe_float(prev.get("weekly_used"))
+        if None in (current_used, prev_current_used, weekly_used, prev_weekly_used):
+            continue
+        current_delta = current_used - prev_current_used
+        weekly_delta = weekly_used - prev_weekly_used
+        if current_delta >= MIN_CURRENT_DELTA and weekly_delta > 0:
+            ratio = weekly_delta / current_delta
+            if 0 < ratio <= 1:
+                ratios.append(ratio)
+
+    return median(ratios[-20:]), len(ratios)
+
+
+def current_capacity_units(current: dict[str, Any], weekly: dict[str, Any]) -> float | None:
+    current_used = safe_float(current.get("used_percent"))
+    current_reset = safe_float(current.get("resets_at"))
+    weekly_reset = safe_float(weekly.get("resets_at"))
+    if None in (current_used, current_reset, weekly_reset) or weekly_reset <= now().timestamp() or current_reset <= now().timestamp():
+        return None
+
+    units = max(0.0, 100.0 - current_used)
+    if current_reset < weekly_reset:
+        units += math.ceil((weekly_reset - current_reset) / (5 * 60 * 60)) * 100.0
+    return units
+
+
+def apply_history_verdicts(data: dict[str, Any], history: dict[str, Any]) -> None:
+    for provider in ("claude", "codex"):
+        ratio, samples = conversion_ratio(history, provider)
+        provider_data = data.get(provider) or {}
+        current = provider_data.get("current") or {}
+        weekly = provider_data.get("weekly") or {}
+        weekly["conversion_samples"] = samples
+        if ratio is None or safe_float(weekly.get("used_percent")) is None:
+            continue
+
+        weekly["weekly_per_current_percent"] = round(ratio, 4)
+        capacity = current_capacity_units(current, weekly)
+        if capacity is None:
+            continue
+
+        reachable = min(100.0, safe_float(weekly["used_percent"]) + capacity * ratio)
+        weekly["max_reachable_percent"] = round(reachable, 1)
+        if reachable < FULL_USED:
+            weekly["pace_label"] = f"Behind: max {round(reachable)}%"
+            weekly["state"] = "under"
+            weekly["color"] = COLORS["under"]
+
+
+def save_history(history: dict[str, Any]) -> None:
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORY_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(history, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(HISTORY_CACHE)
+    except OSError:
+        pass
 
 
 def jsonl(path: Path):
@@ -243,7 +364,11 @@ def claude() -> dict[str, Any]:
 
 
 def snapshot(days: int) -> int:
-    print(json.dumps({"generated_at": now().isoformat(timespec="seconds"), "codex": codex(days), "claude": claude()}, separators=(",", ":")))
+    data = {"generated_at": now().isoformat(timespec="seconds"), "codex": codex(days), "claude": claude()}
+    history = append_history(read_json(HISTORY_CACHE) or {}, data)
+    apply_history_verdicts(data, history)
+    save_history(history)
+    print(json.dumps(data, separators=(",", ":")))
     return 0
 
 
