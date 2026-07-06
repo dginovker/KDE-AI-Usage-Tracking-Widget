@@ -15,6 +15,7 @@ CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-us
 CLAUDE_CACHE = CACHE / "claude-statusline.json"
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "missing": ""}
 TARGET_USED = 80.0
+FULL_USED = 99.5
 
 
 def now() -> dt.datetime:
@@ -104,14 +105,18 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
             limit_early = seconds_left if used >= 100.0 else seconds_left - ((100.0 - used) * window_seconds * elapsed / used)
 
     expected = projected if projected is not None else used
-    if max_used is not None and max_used < TARGET_USED:
+    if max_used is not None and max_used < FULL_USED:
         pace_label = f"Behind: max {round(max_used)}%"
     elif limit_early is not None and limit_early > 0:
         pace_label = f"Limit {compact_duration(limit_early)} early"
     else:
         pace_label = f"Expected {round(expected)}%"
 
-    if raw_projected is not None:
+    if max_used is not None and max_used < FULL_USED:
+        state = "under"
+    elif limit_early is not None and limit_early > 0:
+        state = "near"
+    elif raw_projected is not None:
         if raw_projected >= TARGET_USED:
             state = "ok"
         elif raw_projected >= TARGET_USED * 0.8:
