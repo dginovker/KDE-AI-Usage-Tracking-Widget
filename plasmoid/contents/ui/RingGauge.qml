@@ -65,15 +65,16 @@ Item {
             ctx.clearRect(0, 0, width, height);
 
             var size = Math.min(width, height);
-            var stroke = Math.max(2, Math.round(size * 0.12));
+            var stroke = Math.max(3, Math.round(size * 0.13));
             var cx = width / 2;
             var cy = height / 2;
             var radius = size / 2 - stroke / 2 - 1;
 
             drawRing(ctx, cx, cy, radius, stroke, root.percent, ringColor(root.percent, root.accentColor));
             if (root.innerVisible) {
-                var innerStroke = Math.max(2, Math.round(size * 0.09));
-                var innerRadius = radius - (stroke + innerStroke) * 0.72;
+                var innerStroke = Math.max(3, Math.round(size * 0.12));
+                var gap = Math.max(1, Math.round(size * 0.04));
+                var innerRadius = radius - stroke / 2 - gap - innerStroke / 2;
                 if (innerRadius > innerStroke / 2) {
                     drawRing(ctx, cx, cy, innerRadius, innerStroke, root.innerPercent, ringColor(root.innerPercent, root.innerAccentColor));
                 }
