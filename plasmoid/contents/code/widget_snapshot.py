@@ -87,7 +87,7 @@ def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
     return {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}.get(name)
 
 
-def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
+def health(used: float | None, reset_epoch: Any, window: int | None, weekly: bool = False) -> dict[str, Any]:
     if used is None:
         return {"target_used_percent": None, "projected_used_percent": None, "max_used_percent": None, "pace_delta_percent": None, "pace_label": "--", "state": "missing", "color": ""}
 
@@ -105,14 +105,14 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
             limit_early = seconds_left if used >= 100.0 else seconds_left - ((100.0 - used) * window_seconds * elapsed / used)
 
     expected = projected if projected is not None else used
-    if max_used is not None and max_used < FULL_USED:
+    if weekly and max_used is not None and max_used < FULL_USED:
         pace_label = f"Behind: max {round(max_used)}%"
     elif limit_early is not None and limit_early > 0:
         pace_label = f"Limit {compact_duration(limit_early)} early"
     else:
         pace_label = f"Expected {round(expected)}%"
 
-    if max_used is not None and max_used < FULL_USED:
+    if weekly and max_used is not None and max_used < FULL_USED:
         state = "under"
     elif limit_early is not None and limit_early > 0:
         state = "near"
@@ -168,7 +168,7 @@ def quota(raw_limits: dict[str, Any] | None, name: str, event_time: dt.datetime 
         "window_minutes": window,
         "resets_at": reset_epoch,
         **reset_info(reset_epoch),
-        **health(used, reset_epoch, window),
+        **health(used, reset_epoch, window, name in ("secondary", "seven_day")),
     }
 
 
