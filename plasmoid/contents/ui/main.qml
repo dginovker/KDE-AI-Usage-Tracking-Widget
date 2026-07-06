@@ -41,16 +41,22 @@ PlasmoidItem {
                 Layout.preferredWidth: Math.max(16, compact.height - 2)
                 Layout.preferredHeight: Layout.preferredWidth
                 percent: root.percent(root.value(["claude", "weekly", "used_percent"]))
+                innerVisible: true
+                innerPercent: root.percent(root.value(["claude", "current", "used_percent"]))
                 centerText: root.resetDaysText("claude")
                 accentColor: root.value(["claude", "weekly", "color"]) || ""
+                innerAccentColor: root.value(["claude", "current", "color"]) || ""
             }
 
             RingGauge {
                 Layout.preferredWidth: Math.max(16, compact.height - 2)
                 Layout.preferredHeight: Layout.preferredWidth
                 percent: root.percent(root.value(["codex", "weekly", "used_percent"]))
+                innerVisible: true
+                innerPercent: root.percent(root.value(["codex", "current", "used_percent"]))
                 centerText: root.resetDaysText("codex")
                 accentColor: root.value(["codex", "weekly", "color"]) || ""
+                innerAccentColor: root.value(["codex", "current", "color"]) || ""
             }
         }
 
@@ -219,9 +225,11 @@ PlasmoidItem {
 
     function tooltipText() {
         var claudeWeek = percentLabel(value(["claude", "weekly", "used_percent"]));
+        var claudeCurrent = percentLabel(value(["claude", "current", "used_percent"]));
         var codexWeek = percentLabel(value(["codex", "weekly", "used_percent"]));
+        var codexCurrent = percentLabel(value(["codex", "current", "used_percent"]));
         var updated = updatedLabel();
-        return i18n("Claude week used: %1\nCodex week used: %2\nUpdated: %3", claudeWeek, codexWeek, updated);
+        return i18n("Claude: week %1, 5h %2\nCodex: week %3, 5h %4\nUpdated: %5", claudeWeek, claudeCurrent, codexWeek, codexCurrent, updated);
     }
 
     function resetDaysText(providerName) {

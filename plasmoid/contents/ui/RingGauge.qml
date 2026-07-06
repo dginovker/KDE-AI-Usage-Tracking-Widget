@@ -5,8 +5,11 @@ Item {
     id: root
 
     property real percent: -1
+    property real innerPercent: -1
     property string centerText: "--"
     property string accentColor: ""
+    property string innerAccentColor: ""
+    property bool innerVisible: false
 
     implicitWidth: Kirigami.Units.iconSizes.medium
     implicitHeight: Kirigami.Units.iconSizes.medium
@@ -15,12 +18,12 @@ Item {
         return typeof value === "number" && value >= 0;
     }
 
-    function ringColor(value) {
+    function ringColor(value, color) {
         if (!hasValue(value)) {
             return Kirigami.Theme.disabledTextColor;
         }
-        if (accentColor.length > 0) {
-            return accentColor;
+        if (color.length > 0) {
+            return color;
         }
         if (value < 64) {
             return "#9b59b6";
@@ -67,7 +70,14 @@ Item {
             var cy = height / 2;
             var radius = size / 2 - stroke / 2 - 1;
 
-            drawRing(ctx, cx, cy, radius, stroke, root.percent, ringColor(root.percent));
+            drawRing(ctx, cx, cy, radius, stroke, root.percent, ringColor(root.percent, root.accentColor));
+            if (root.innerVisible) {
+                var innerStroke = Math.max(2, Math.round(size * 0.09));
+                var innerRadius = radius - (stroke + innerStroke) * 0.72;
+                if (innerRadius > innerStroke / 2) {
+                    drawRing(ctx, cx, cy, innerRadius, innerStroke, root.innerPercent, ringColor(root.innerPercent, root.innerAccentColor));
+                }
+            }
         }
     }
 
@@ -82,7 +92,10 @@ Item {
     }
 
     onPercentChanged: canvas.requestPaint()
+    onInnerPercentChanged: canvas.requestPaint()
     onAccentColorChanged: canvas.requestPaint()
+    onInnerAccentColorChanged: canvas.requestPaint()
+    onInnerVisibleChanged: canvas.requestPaint()
     onWidthChanged: canvas.requestPaint()
     onHeightChanged: canvas.requestPaint()
 }

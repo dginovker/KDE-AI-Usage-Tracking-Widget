@@ -27,6 +27,14 @@ ColumnLayout {
         return weekly.used_percent;
     }
 
+    function currentPercent() {
+        var current = quota("current");
+        if (typeof current.used_percent !== "number") {
+            return -1;
+        }
+        return current.used_percent;
+    }
+
     function weeklyDays() {
         var weekly = quota("weekly");
         if (weekly.reset_days_label === 0 || weekly.reset_days_label === "0") {
@@ -62,8 +70,11 @@ ColumnLayout {
         Layout.preferredWidth: Kirigami.Units.iconSizes.huge
         Layout.preferredHeight: Kirigami.Units.iconSizes.huge
         percent: root.weeklyPercent()
+        innerVisible: true
+        innerPercent: root.currentPercent()
         centerText: root.weeklyDays()
         accentColor: root.quota("weekly").color || ""
+        innerAccentColor: root.quota("current").color || ""
     }
 
     PlasmaComponents3.Label {
