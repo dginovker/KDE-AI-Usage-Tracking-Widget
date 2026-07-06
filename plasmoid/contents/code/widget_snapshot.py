@@ -135,7 +135,7 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
 
     expected = projected if projected is not None else used
     if wait_seconds is None or wait_seconds > 0:
-        pace_label = f"Collecting {compact_duration(wait_seconds)}" if wait_seconds is not None else "Collecting pace"
+        pace_label = f"Forecast in {compact_duration(wait_seconds)}" if wait_seconds is not None else "Forecast pending"
     elif limit_early is not None and limit_early > 0:
         pace_label = f"Limit {compact_duration(limit_early)} early"
     else:
