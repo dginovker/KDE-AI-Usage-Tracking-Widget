@@ -106,11 +106,11 @@ def window_minutes(name: str, payload: dict[str, Any]) -> int | None:
     return {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}.get(name)
 
 
-def pace_ready(window: int | None, elapsed_seconds: float | None) -> bool:
+def pace_wait_seconds(window: int | None, elapsed_seconds: float | None) -> float | None:
     if window is None or elapsed_seconds is None:
-        return False
+        return None
     minimum = 12 * 60 * 60 if window >= 7 * 24 * 60 else 30 * 60
-    return elapsed_seconds >= minimum
+    return max(0.0, minimum - elapsed_seconds)
 
 
 def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, Any]:
@@ -118,14 +118,14 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
         return {"target_used_percent": None, "projected_used_percent": None, "max_used_percent": None, "pace_delta_percent": None, "pace_label": "--", "state": "missing", "color": ""}
 
     target_now = projected = raw_projected = max_used = limit_early = None
-    ready = False
+    wait_seconds = None
     if reset_epoch is not None and window:
         seconds_left = max(0.0, float(reset_epoch) - now().timestamp())
         window_seconds = window * 60
         left_fraction = max(0.0, min(1.0, seconds_left / window_seconds))
         elapsed = max(0.0, 1.0 - left_fraction)
         elapsed_seconds = window_seconds * elapsed
-        ready = pace_ready(window, elapsed_seconds)
+        wait_seconds = pace_wait_seconds(window, elapsed_seconds)
         target_now = TARGET_USED * elapsed
         raw_projected = used if elapsed <= 0 else used / elapsed
         projected = min(100.0, raw_projected)
@@ -134,13 +134,14 @@ def health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str
             limit_early = seconds_left if used >= 100.0 else seconds_left - ((100.0 - used) * window_seconds * elapsed / used)
 
     expected = projected if projected is not None else used
-    if not ready:
-        pace_label = "Collecting pace"
+    if wait_seconds is None or wait_seconds > 0:
+        pace_label = f"Collecting {compact_duration(wait_seconds)}" if wait_seconds is not None else "Collecting pace"
     elif limit_early is not None and limit_early > 0:
         pace_label = f"Limit {compact_duration(limit_early)} early"
     else:
         pace_label = f"Expected {round(expected)}%"
 
+    ready = wait_seconds == 0
     if limit_early is not None and limit_early > 0 and ready:
         state = "near"
     elif raw_projected is not None and ready:
