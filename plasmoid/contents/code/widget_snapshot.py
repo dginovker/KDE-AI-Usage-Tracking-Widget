@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ TARGET_USED = 80.0
 FULL_USED = 99.5
 HISTORY_LIMIT = 300
 MIN_CURRENT_DELTA = 4.0
+LIMIT_RETRY_RE = re.compile(r"try again at ([A-Z][a-z]+\.? \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)", re.I)
 
 
 def now() -> dt.datetime:
@@ -33,6 +35,19 @@ def parse_time(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
     except ValueError:
         return None
+
+
+def parse_retry_time(text: str) -> dt.datetime | None:
+    match = LIMIT_RETRY_RE.search(text)
+    if not match:
+        return None
+    value = re.sub(r"(\d{1,2})(st|nd|rd|th)", r"\1", match.group(1), flags=re.I)
+    for fmt in ("%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
+        try:
+            return dt.datetime.strptime(value, fmt).replace(tzinfo=now().tzinfo)
+        except ValueError:
+            pass
+    return None
 
 
 def local_epoch(epoch: Any) -> dt.datetime | None:
@@ -148,6 +163,23 @@ def blank_quota() -> dict[str, Any]:
         "resets_at": None,
         **reset_info(None),
         **health(None, None, None),
+    }
+
+
+def limited_quota(reset_epoch: float, used: float | None = 100.0) -> dict[str, Any]:
+    return {
+        "used_percent": used,
+        "window_minutes": None,
+        "resets_at": reset_epoch,
+        **reset_info(reset_epoch),
+        "target_used_percent": None,
+        "projected_used_percent": None,
+        "max_used_percent": None,
+        "pace_delta_percent": None,
+        "pace_label": "Limited",
+        "rate_limited": True,
+        "state": "limited",
+        "color": "#da4453",
     }
 
 
@@ -323,6 +355,22 @@ def latest_token_event(paths: list[Path]) -> tuple[dict[str, Any] | None, dt.dat
     return latest, latest_time if latest else None
 
 
+def latest_limit_event(paths: list[Path]) -> tuple[float | None, dt.datetime | None]:
+    latest_reset, latest_time = None, dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    for path in paths:
+        for obj in jsonl(path):
+            when = parse_time(obj.get("timestamp"))
+            if not when or when <= latest_time:
+                continue
+            text = json.dumps(obj.get("payload") or {}, ensure_ascii=False)
+            if "usage limit" not in text.lower() and "try again at" not in text.lower():
+                continue
+            retry = parse_retry_time(text)
+            if retry and retry > now():
+                latest_reset, latest_time = retry.timestamp(), when
+    return latest_reset, latest_time if latest_reset else None
+
+
 def codex_paths(home: Path, thread_path: Path | None, days: int) -> list[Path]:
     if thread_path and thread_path.exists():
         return [thread_path]
@@ -343,12 +391,22 @@ def codex(days: int) -> dict[str, Any]:
         except sqlite3.Error:
             pass
 
+    all_paths = codex_paths(home, None, days)
     payload, when = latest_token_event(codex_paths(home, thread_path, days))
+    if payload is None:
+        payload, when = latest_token_event(all_paths)
+    limit_reset, limit_when = latest_limit_event(all_paths)
     limits = (payload or {}).get("rate_limits")
+    limited = limit_reset is not None and (when is None or (limit_when is not None and limit_when > when))
+    current = quota(limits, "primary", when)
+    weekly = quota(limits, "secondary", when)
+    if limited:
+        current = limited_quota(limit_reset, None)
+        weekly = limited_quota(limit_reset)
     return {
-        "available": bool(payload or thread_path),
-        "current": quota(limits, "primary", when),
-        "weekly": quota(limits, "secondary", when),
+        "available": bool(payload or thread_path or limited),
+        "current": current,
+        "weekly": weekly,
     }
 
 
