@@ -12,51 +12,7 @@ ColumnLayout {
     spacing: Kirigami.Units.smallSpacing / 2
 
     function used() {
-        if (!quota || typeof quota.used_percent !== "number") {
-            return -1;
-        }
-        return quota.used_percent;
-    }
-
-    function colorFor(value) {
-        if (value < 0) {
-            return Kirigami.Theme.disabledTextColor;
-        }
-        if (quota && quota.color) {
-            return quota.color;
-        }
-        if (value < 64) {
-            return "#3daee9";
-        }
-        if (value < 80) {
-            return "#fdbc4b";
-        }
-        return "#27ae60";
-    }
-
-    function usedText(value) {
-        if (value < 0) {
-            return "--";
-        }
-        return i18n("%1 used", Math.round(value).toString() + "%");
-    }
-
-    function resetText() {
-        if (!quota || !quota.reset_short) {
-            return "--";
-        }
-        var reset = String(quota.reset_short);
-        if (reset.indexOf("Tomorrow ") === 0) {
-            reset = "tomorrow " + reset.substring(9);
-        }
-        return i18n("Resets %1", reset);
-    }
-
-    function paceText() {
-        if (!quota || !quota.pace_label) {
-            return "--";
-        }
-        return String(quota.pace_label);
+        return quota && typeof quota.used === "number" ? quota.used : -1;
     }
 
     RowLayout {
@@ -70,7 +26,7 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: root.usedText(root.used())
+            text: root.used() < 0 ? "--" : i18n("%1 used", Math.round(root.used()).toString() + "%")
             opacity: root.used() < 0 ? 0.55 : 1
         }
     }
@@ -87,7 +43,7 @@ ColumnLayout {
             anchors.bottom: parent.bottom
             width: parent.width * Math.max(0, Math.min(100, root.used())) / 100
             radius: parent.radius
-            color: root.colorFor(root.used())
+            color: root.quota.color || Kirigami.Theme.disabledTextColor
             visible: root.used() >= 0
         }
     }
@@ -97,7 +53,7 @@ ColumnLayout {
         spacing: Kirigami.Units.smallSpacing
 
         PlasmaComponents3.Label {
-            text: root.paceText()
+            text: root.quota.pace || "--"
             opacity: 0.78
             elide: Text.ElideRight
             font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
@@ -105,7 +61,7 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: root.resetText()
+            text: root.quota.reset_label || "--"
             opacity: 0.7
             font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
         }

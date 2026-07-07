@@ -12,6 +12,7 @@ PlasmoidItem {
 
     readonly property int refreshMs: 10 * 60 * 1000
     readonly property string helperPath: fileUrlToPath(Qt.resolvedUrl("../code/widget_snapshot.py"))
+    readonly property var providers: ["claude", "codex"]
     property string activeSource: ""
     property var snapshot: ({})
     property bool loading: false
@@ -23,7 +24,6 @@ PlasmoidItem {
     Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
 
     toolTipMainText: i18n("AI Usage")
-    toolTipSubText: tooltipText()
 
     compactRepresentation: Item {
         id: compact
@@ -37,26 +37,18 @@ PlasmoidItem {
             anchors.centerIn: parent
             spacing: Kirigami.Units.smallSpacing
 
-            RingGauge {
-                Layout.preferredWidth: Math.max(16, compact.height - 2)
-                Layout.preferredHeight: Layout.preferredWidth
-                percent: root.percent(root.value(["claude", "weekly", "used_percent"]))
-                innerVisible: true
-                innerPercent: root.percent(root.value(["claude", "current", "used_percent"]))
-                centerText: root.resetDaysText("claude")
-                accentColor: root.value(["claude", "weekly", "color"]) || ""
-                innerAccentColor: root.value(["claude", "current", "color"]) || ""
-            }
+            Repeater {
+                model: root.providers
 
-            RingGauge {
-                Layout.preferredWidth: Math.max(16, compact.height - 2)
-                Layout.preferredHeight: Layout.preferredWidth
-                percent: root.percent(root.value(["codex", "weekly", "used_percent"]))
-                innerVisible: true
-                innerPercent: root.percent(root.value(["codex", "current", "used_percent"]))
-                centerText: root.resetDaysText("codex")
-                accentColor: root.value(["codex", "weekly", "color"]) || ""
-                innerAccentColor: root.value(["codex", "current", "color"]) || ""
+                RingGauge {
+                    Layout.preferredWidth: Math.max(16, compact.height - 2)
+                    Layout.preferredHeight: Layout.preferredWidth
+                    percent: root.used(modelData, "weekly")
+                    innerPercent: root.used(modelData, "current")
+                    centerText: root.quota(modelData, "weekly").days || "?"
+                    accentColor: root.quota(modelData, "weekly").color || ""
+                    innerAccentColor: root.quota(modelData, "current").color || ""
+                }
             }
         }
 
@@ -79,14 +71,10 @@ PlasmoidItem {
             anchors.margins: Kirigami.Units.largeSpacing
             spacing: Kirigami.Units.smallSpacing
 
-            RowLayout {
+            PlasmaComponents3.Label {
+                text: i18n("AI Usage")
+                font.bold: true
                 Layout.fillWidth: true
-
-                PlasmaComponents3.Label {
-                    text: i18n("AI Usage")
-                    font.bold: true
-                    Layout.fillWidth: true
-                }
             }
 
             GridLayout {
@@ -95,14 +83,13 @@ PlasmoidItem {
                 rowSpacing: Kirigami.Units.largeSpacing
                 Layout.fillWidth: true
 
-                ProviderPanel {
-                    title: i18n("Claude")
-                    provider: root.value(["claude"]) || {}
-                }
+                Repeater {
+                    model: root.providers
 
-                ProviderPanel {
-                    title: i18n("Codex")
-                    provider: root.value(["codex"]) || {}
+                    ProviderPanel {
+                        title: modelData === "claude" ? i18n("Claude") : i18n("Codex")
+                        provider: root.value([modelData]) || {}
+                    }
                 }
             }
 
@@ -162,20 +149,7 @@ PlasmoidItem {
         onTriggered: root.refreshData()
     }
 
-    onExpandedChanged: {
-        if (root.expanded) {
-            refreshData();
-        }
-    }
-
-    Component.onCompleted: {
-        var configureAction = Plasmoid.internalAction("configure");
-        if (configureAction) {
-            configureAction.visible = false;
-            configureAction.enabled = false;
-        }
-        refreshData();
-    }
+    Component.onCompleted: refreshData()
 
     function fileUrlToPath(url) {
         var text = url.toString();
@@ -198,49 +172,13 @@ PlasmoidItem {
         executable.connectSource(activeSource);
     }
 
-    function percent(value) {
-        if (typeof value !== "number") {
-            return -1;
-        }
-        return value;
+    function quota(providerName, quotaName) {
+        return value([providerName, quotaName]) || {};
     }
 
-    function percentLabel(value) {
-        if (typeof value !== "number") {
-            return "--";
-        }
-        return Math.round(value).toString() + "%";
-    }
-
-    function updatedLabel() {
-        if (!snapshot || !snapshot.generated_at) {
-            return i18n("not updated");
-        }
-        var date = new Date(snapshot.generated_at);
-        if (isNaN(date.getTime())) {
-            return snapshot.generated_at;
-        }
-        return date.toLocaleTimeString(Qt.locale(), "hh:mm");
-    }
-
-    function tooltipText() {
-        var claudeWeek = percentLabel(value(["claude", "weekly", "used_percent"]));
-        var claudeCurrent = percentLabel(value(["claude", "current", "used_percent"]));
-        var codexWeek = percentLabel(value(["codex", "weekly", "used_percent"]));
-        var codexCurrent = percentLabel(value(["codex", "current", "used_percent"]));
-        var updated = updatedLabel();
-        return i18n("Claude: week %1, 5h %2\nCodex: week %3, 5h %4\nUpdated: %5", claudeWeek, claudeCurrent, codexWeek, codexCurrent, updated);
-    }
-
-    function resetDaysText(providerName) {
-        var label = value([providerName, "weekly", "reset_days_label"]);
-        if (label === 0 || label === "0") {
-            return "0";
-        }
-        if (label !== undefined && label !== null && label !== "") {
-            return String(label);
-        }
-        return "?";
+    function used(providerName, quotaName) {
+        var current = quota(providerName, quotaName);
+        return typeof current.used === "number" ? current.used : -1;
     }
 
     function value(path) {

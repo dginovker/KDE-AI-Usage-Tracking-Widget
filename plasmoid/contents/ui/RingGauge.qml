@@ -9,30 +9,9 @@ Item {
     property string centerText: "--"
     property string accentColor: ""
     property string innerAccentColor: ""
-    property bool innerVisible: false
 
     implicitWidth: Kirigami.Units.iconSizes.medium
     implicitHeight: Kirigami.Units.iconSizes.medium
-
-    function hasValue(value) {
-        return typeof value === "number" && value >= 0;
-    }
-
-    function ringColor(value, color) {
-        if (!hasValue(value)) {
-            return Kirigami.Theme.disabledTextColor;
-        }
-        if (color.length > 0) {
-            return color;
-        }
-        if (value < 64) {
-            return "#3daee9";
-        }
-        if (value < 80) {
-            return "#fdbc4b";
-        }
-        return "#27ae60";
-    }
 
     function drawRing(ctx, cx, cy, radius, stroke, value, color) {
         ctx.lineWidth = stroke;
@@ -43,14 +22,14 @@ Item {
         ctx.arc(cx, cy, radius, 0, Math.PI * 2, false);
         ctx.stroke();
 
-        if (!hasValue(value)) {
+        if (typeof value !== "number" || value < 0) {
             return;
         }
 
         var start = -Math.PI / 2;
         var end = start + Math.PI * 2 * Math.max(0, Math.min(100, value)) / 100;
         ctx.beginPath();
-        ctx.strokeStyle = color;
+        ctx.strokeStyle = color || Kirigami.Theme.highlightColor;
         ctx.arc(cx, cy, radius, start, end, false);
         ctx.stroke();
     }
@@ -70,14 +49,12 @@ Item {
             var cy = height / 2;
             var radius = size / 2 - stroke / 2 - 1;
 
-            drawRing(ctx, cx, cy, radius, stroke, root.percent, ringColor(root.percent, root.accentColor));
-            if (root.innerVisible) {
-                var innerStroke = Math.max(3, Math.round(size * 0.12));
-                var gap = Math.max(1, Math.round(size * 0.04));
-                var innerRadius = radius - stroke / 2 - gap - innerStroke / 2;
-                if (innerRadius > innerStroke / 2) {
-                    drawRing(ctx, cx, cy, innerRadius, innerStroke, root.innerPercent, ringColor(root.innerPercent, root.innerAccentColor));
-                }
+            drawRing(ctx, cx, cy, radius, stroke, root.percent, root.accentColor);
+            var innerStroke = Math.max(3, Math.round(size * 0.12));
+            var gap = Math.max(1, Math.round(size * 0.04));
+            var innerRadius = radius - stroke / 2 - gap - innerStroke / 2;
+            if (innerRadius > innerStroke / 2) {
+                drawRing(ctx, cx, cy, innerRadius, innerStroke, root.innerPercent, root.innerAccentColor);
             }
         }
     }
@@ -96,7 +73,6 @@ Item {
     onInnerPercentChanged: canvas.requestPaint()
     onAccentColorChanged: canvas.requestPaint()
     onInnerAccentColorChanged: canvas.requestPaint()
-    onInnerVisibleChanged: canvas.requestPaint()
     onWidthChanged: canvas.requestPaint()
     onHeightChanged: canvas.requestPaint()
 }

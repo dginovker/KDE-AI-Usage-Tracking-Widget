@@ -12,50 +12,13 @@ ColumnLayout {
     spacing: Kirigami.Units.smallSpacing
     Layout.fillWidth: true
 
-    function quota(path) {
-        if (!provider || typeof provider !== "object") {
-            return {};
-        }
-        return provider[path] || {};
+    function quota(name) {
+        return provider && typeof provider === "object" ? provider[name] || {} : {};
     }
 
-    function weeklyPercent() {
-        var weekly = quota("weekly");
-        if (typeof weekly.used_percent !== "number") {
-            return -1;
-        }
-        return weekly.used_percent;
-    }
-
-    function currentPercent() {
-        var current = quota("current");
-        if (typeof current.used_percent !== "number") {
-            return -1;
-        }
-        return current.used_percent;
-    }
-
-    function weeklyDays() {
-        var weekly = quota("weekly");
-        if (weekly.reset_days_label === 0 || weekly.reset_days_label === "0") {
-            return "0";
-        }
-        if (weekly.reset_days_label !== undefined && weekly.reset_days_label !== null && weekly.reset_days_label !== "") {
-            return String(weekly.reset_days_label);
-        }
-        return "?";
-    }
-
-    function weeklyResetText() {
-        var reset = root.quota("weekly").reset_short;
-        if (!reset) {
-            return "--";
-        }
-        reset = String(reset);
-        if (reset.indexOf("Tomorrow ") === 0) {
-            reset = "tomorrow " + reset.substring(9);
-        }
-        return i18n("Resets %1", reset);
+    function used(name) {
+        var value = quota(name).used;
+        return typeof value === "number" ? value : -1;
     }
 
     PlasmaComponents3.Label {
@@ -69,30 +32,27 @@ ColumnLayout {
         Layout.alignment: Qt.AlignHCenter
         Layout.preferredWidth: Kirigami.Units.iconSizes.huge
         Layout.preferredHeight: Kirigami.Units.iconSizes.huge
-        percent: root.weeklyPercent()
-        innerVisible: true
-        innerPercent: root.currentPercent()
-        centerText: root.weeklyDays()
+        percent: root.used("weekly")
+        innerPercent: root.used("current")
+        centerText: root.quota("weekly").days || "?"
         accentColor: root.quota("weekly").color || ""
         innerAccentColor: root.quota("current").color || ""
     }
 
     PlasmaComponents3.Label {
-        text: root.weeklyResetText()
+        text: root.quota("weekly").reset_label || "--"
         opacity: 0.72
         horizontalAlignment: Text.AlignHCenter
         Layout.fillWidth: true
     }
 
-    QuotaBar {
-        title: i18n("5h")
-        quota: root.quota("current")
-        Layout.fillWidth: true
-    }
+    Repeater {
+        model: ["current", "weekly"]
 
-    QuotaBar {
-        title: i18n("Week")
-        quota: root.quota("weekly")
-        Layout.fillWidth: true
+        QuotaBar {
+            title: modelData === "current" ? i18n("5h") : i18n("Week")
+            quota: root.quota(modelData)
+            Layout.fillWidth: true
+        }
     }
 }
