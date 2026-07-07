@@ -10,6 +10,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 
@@ -104,12 +105,6 @@ def duration(seconds: float) -> str:
     return f"{days}d {extra}h" if extra and days < 3 else f"{days}d"
 
 
-def pace_wait(window: int | None, elapsed_seconds: float | None) -> float | None:
-    if window is None or elapsed_seconds is None:
-        return None
-    return max(0.0, (12 * 60 * 60 if window >= 7 * 24 * 60 else 30 * 60) - elapsed_seconds)
-
-
 def quota_health(used: float | None, reset_epoch: Any, window: int | None) -> dict[str, str]:
     if used is None:
         return {"pace": "--", "color": ""}
@@ -121,7 +116,7 @@ def quota_health(used: float | None, reset_epoch: Any, window: int | None) -> di
         window_seconds = window * 60
         left_fraction = max(0.0, min(1.0, seconds_left / window_seconds))
         elapsed = max(0.0, 1.0 - left_fraction)
-        wait = pace_wait(window, window_seconds * elapsed)
+        wait = max(0.0, (12 * 60 * 60 if window >= 7 * 24 * 60 else 30 * 60) - window_seconds * elapsed)
         raw_projected = used if elapsed <= 0 else used / elapsed
         projected = min(100.0, raw_projected)
         if raw_projected > 100.0 and used > 0:
@@ -169,13 +164,12 @@ def history_record(data: dict[str, Any], provider: str) -> dict[str, Any] | None
     current = (data.get(provider) or {}).get("current") or {}
     weekly = (data.get(provider) or {}).get("weekly") or {}
     values = {
-        "at": data["generated_at"],
         "current_used": as_float(current.get("used")),
         "current_reset": as_float(current.get("reset")),
         "weekly_used": as_float(weekly.get("used")),
         "weekly_reset": as_float(weekly.get("reset")),
     }
-    return None if any(v is None for k, v in values.items() if k != "at") else values
+    return None if any(v is None for v in values.values()) else values
 
 
 def append_history(history: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
@@ -189,14 +183,6 @@ def append_history(history: dict[str, Any], data: dict[str, Any]) -> dict[str, A
             items.append(record)
         history[provider] = items[-HISTORY_LIMIT:]
     return history
-
-
-def median(values: list[float]) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    mid = len(ordered) // 2
-    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
 def conversion_ratio(history: dict[str, Any], provider: str) -> tuple[float | None, int]:
@@ -224,7 +210,7 @@ def conversion_ratio(history: dict[str, Any], provider: str) -> tuple[float | No
             add()
             start = end = item
     add()
-    return median(ratios[-20:]), len(ratios)
+    return (median(ratios[-20:]) if ratios else None), len(ratios)
 
 
 def current_capacity(current: dict[str, Any], weekly: dict[str, Any]) -> float | None:
@@ -349,7 +335,7 @@ def claude() -> dict[str, Any]:
 
 
 def snapshot(days: int) -> int:
-    data = {"generated_at": now().isoformat(timespec="seconds"), "codex": codex(days), "claude": claude()}
+    data = {"codex": codex(days), "claude": claude()}
     history = append_history(read_json(HISTORY_CACHE) or {}, data)
     apply_history(data, history)
     save_history(history)

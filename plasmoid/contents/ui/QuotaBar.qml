@@ -8,12 +8,9 @@ ColumnLayout {
 
     property string title: ""
     property var quota: ({})
+    readonly property real used: quota && typeof quota.used === "number" ? quota.used : -1
 
     spacing: Kirigami.Units.smallSpacing / 2
-
-    function used() {
-        return quota && typeof quota.used === "number" ? quota.used : -1;
-    }
 
     RowLayout {
         Layout.fillWidth: true
@@ -26,8 +23,8 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: root.used() < 0 ? "--" : i18n("%1 used", Math.round(root.used()).toString() + "%")
-            opacity: root.used() < 0 ? 0.55 : 1
+            text: root.used < 0 ? "--" : i18n("%1 used", Math.round(root.used).toString() + "%")
+            opacity: root.used < 0 ? 0.55 : 1
         }
     }
 
@@ -41,10 +38,10 @@ ColumnLayout {
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            width: parent.width * Math.max(0, Math.min(100, root.used())) / 100
+            width: parent.width * Math.max(0, Math.min(100, root.used)) / 100
             radius: parent.radius
             color: root.quota.color || Kirigami.Theme.disabledTextColor
-            visible: root.used() >= 0
+            visible: root.used >= 0
         }
     }
 

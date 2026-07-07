@@ -88,7 +88,7 @@ PlasmoidItem {
 
                     ProviderPanel {
                         title: modelData === "claude" ? i18n("Claude") : i18n("Codex")
-                        provider: root.value([modelData]) || {}
+                        provider: root.provider(modelData)
                     }
                 }
             }
@@ -102,7 +102,7 @@ PlasmoidItem {
             }
 
             PlasmaComponents3.Label {
-                visible: root.value(["claude", "available"]) === false
+                visible: root.provider("claude").available === false
                 text: i18n("Claude usage will appear after the next Claude Code response.")
                 opacity: 0.7
                 wrapMode: Text.WordWrap
@@ -172,8 +172,12 @@ PlasmoidItem {
         executable.connectSource(activeSource);
     }
 
+    function provider(providerName) {
+        return snapshot && typeof snapshot === "object" ? snapshot[providerName] || {} : {};
+    }
+
     function quota(providerName, quotaName) {
-        return value([providerName, quotaName]) || {};
+        return provider(providerName)[quotaName] || {};
     }
 
     function used(providerName, quotaName) {
@@ -181,14 +185,4 @@ PlasmoidItem {
         return typeof current.used === "number" ? current.used : -1;
     }
 
-    function value(path) {
-        var current = snapshot;
-        for (var i = 0; i < path.length; i++) {
-            if (current === null || current === undefined || typeof current !== "object") {
-                return undefined;
-            }
-            current = current[path[i]];
-        }
-        return current;
-    }
 }
