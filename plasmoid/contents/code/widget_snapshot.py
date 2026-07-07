@@ -264,13 +264,17 @@ def jsonl(path: Path):
 
 def latest_token_event(paths: list[Path]) -> tuple[dict[str, Any] | None, dt.datetime | None]:
     latest, latest_time = None, dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    preferred, preferred_time = None, latest_time
     for path in paths:
         for obj in jsonl(path):
             payload = obj.get("payload") or {}
             when = parse_time(obj.get("timestamp"))
             if obj.get("type") == "event_msg" and payload.get("type") == "token_count" and when and when > latest_time:
                 latest, latest_time = payload, when
-    return latest, latest_time if latest else None
+            if obj.get("type") == "event_msg" and payload.get("type") == "token_count" and when and when > preferred_time:
+                if (payload.get("rate_limits") or {}).get("limit_id") == "codex":
+                    preferred, preferred_time = payload, when
+    return (preferred, preferred_time) if preferred else (latest, latest_time if latest else None)
 
 
 def latest_limit_event(paths: list[Path]) -> tuple[float | None, dt.datetime | None]:
@@ -312,9 +316,7 @@ def codex(days: int) -> dict[str, Any]:
             pass
 
     all_paths = codex_paths(home, None, days)
-    payload, when = latest_token_event(codex_paths(home, thread_path, days))
-    if payload is None:
-        payload, when = latest_token_event(all_paths)
+    payload, when = latest_token_event(all_paths)
     limit_reset, limit_when = latest_limit_event(all_paths)
     limited = limit_reset is not None and (when is None or (limit_when is not None and limit_when > when))
     current = quota((payload or {}).get("rate_limits"), "primary", when)
