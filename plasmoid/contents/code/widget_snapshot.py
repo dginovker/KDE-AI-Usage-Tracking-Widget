@@ -280,22 +280,39 @@ def conversion_ratio(history: dict[str, Any], provider: str) -> tuple[float | No
         return None, 0
 
     ratios = []
-    for prev, current in zip(items, items[1:]):
-        if prev.get("current_reset") != current.get("current_reset") or prev.get("weekly_reset") != current.get("weekly_reset"):
-            continue
-        current_used = safe_float(current.get("current_used"))
-        prev_current_used = safe_float(prev.get("current_used"))
-        weekly_used = safe_float(current.get("weekly_used"))
-        prev_weekly_used = safe_float(prev.get("weekly_used"))
-        if None in (current_used, prev_current_used, weekly_used, prev_weekly_used):
-            continue
-        current_delta = current_used - prev_current_used
-        weekly_delta = weekly_used - prev_weekly_used
+    segment_start = segment_end = None
+
+    def add_segment(start: dict[str, Any] | None, end: dict[str, Any] | None) -> None:
+        if not start or not end:
+            return
+        start_current = safe_float(start.get("current_used"))
+        end_current = safe_float(end.get("current_used"))
+        start_weekly = safe_float(start.get("weekly_used"))
+        end_weekly = safe_float(end.get("weekly_used"))
+        if None in (start_current, end_current, start_weekly, end_weekly):
+            return
+        current_delta = end_current - start_current
+        weekly_delta = end_weekly - start_weekly
         if current_delta >= MIN_CURRENT_DELTA and weekly_delta > 0:
             ratio = weekly_delta / current_delta
             if 0 < ratio <= 1:
                 ratios.append(ratio)
 
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = (item.get("current_reset"), item.get("weekly_reset"))
+        if segment_start is None:
+            segment_start = segment_end = item
+            continue
+        current_key = (segment_start.get("current_reset"), segment_start.get("weekly_reset"))
+        if key != current_key:
+            add_segment(segment_start, segment_end)
+            segment_start = segment_end = item
+        else:
+            segment_end = item
+
+    add_segment(segment_start, segment_end)
     return median(ratios[-20:]), len(ratios)
 
 
