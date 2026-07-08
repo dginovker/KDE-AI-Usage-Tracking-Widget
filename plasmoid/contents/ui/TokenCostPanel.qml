@@ -6,6 +6,8 @@ import org.kde.plasma.components as PlasmaComponents3
 ColumnLayout {
     id: root
 
+    property string providerName: ""
+    property string title: ""
     property var tokens: ({})
     readonly property var windows: tokens && tokens.windows ? tokens.windows : []
 
@@ -13,7 +15,7 @@ ColumnLayout {
     Layout.fillWidth: true
 
     PlasmaComponents3.Label {
-        text: i18n("API cost estimate")
+        text: root.title
         font.bold: true
         Layout.fillWidth: true
     }
@@ -29,28 +31,14 @@ ColumnLayout {
         }
 
         PlasmaComponents3.Label {
-            text: i18n("Codex tokens")
+            text: i18n("Tokens")
             opacity: 0.7
             horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+            Layout.fillWidth: true
         }
 
         PlasmaComponents3.Label {
-            text: i18n("Codex $")
-            opacity: 0.7
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 4
-        }
-
-        PlasmaComponents3.Label {
-            text: i18n("Claude tokens")
-            opacity: 0.7
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-        }
-
-        PlasmaComponents3.Label {
-            text: i18n("Claude $")
+            text: i18n("Est. $")
             opacity: 0.7
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: Kirigami.Units.gridUnit * 4
@@ -71,36 +59,16 @@ ColumnLayout {
             }
 
             PlasmaComponents3.Label {
-                text: modelData.codex_tokens || "--"
+                text: modelData[root.providerName + "_tokens"] || "--"
                 horizontalAlignment: Text.AlignRight
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                Layout.fillWidth: true
             }
 
             PlasmaComponents3.Label {
-                text: modelData.codex_cost || "--"
-                horizontalAlignment: Text.AlignRight
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 4
-            }
-
-            PlasmaComponents3.Label {
-                text: modelData.claude_tokens || "--"
-                horizontalAlignment: Text.AlignRight
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-            }
-
-            PlasmaComponents3.Label {
-                text: modelData.claude_cost || "--"
+                text: modelData[root.providerName + "_cost"] || "--"
                 horizontalAlignment: Text.AlignRight
                 Layout.preferredWidth: Kirigami.Units.gridUnit * 4
             }
         }
-    }
-
-    PlasmaComponents3.Label {
-        visible: Boolean(root.tokens && root.tokens.note)
-        text: root.tokens.note || ""
-        opacity: 0.68
-        wrapMode: Text.WordWrap
-        Layout.fillWidth: true
     }
 }

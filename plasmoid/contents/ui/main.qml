@@ -63,7 +63,7 @@ PlasmoidItem {
 
     fullRepresentation: PlasmaExtras.Representation {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 34
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 21
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 24
         collapseMarginsHint: true
 
         ColumnLayout {
@@ -91,6 +91,16 @@ PlasmoidItem {
                         provider: root.provider(modelData)
                     }
                 }
+
+                Repeater {
+                    model: root.providers
+
+                    TokenCostPanel {
+                        providerName: modelData
+                        title: modelData === "claude" ? i18n("Claude API estimate") : i18n("Codex API estimate")
+                        tokens: root.snapshot.tokens || {}
+                    }
+                }
             }
 
             PlasmaComponents3.Label {
@@ -109,8 +119,11 @@ PlasmoidItem {
                 Layout.fillWidth: true
             }
 
-            TokenCostPanel {
-                tokens: root.snapshot.tokens || {}
+            PlasmaComponents3.Label {
+                visible: Boolean(root.snapshot.tokens && root.snapshot.tokens.note)
+                text: (root.snapshot.tokens || {}).note || ""
+                opacity: 0.68
+                wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
 
