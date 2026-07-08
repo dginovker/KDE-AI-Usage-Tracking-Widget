@@ -525,11 +525,14 @@ def window_token_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: di
     for key, label, _seconds in TOKEN_WINDOWS:
         codex_total, codex_unknown = priced_total("codex", codex_tokens[key]["models"])
         claude_total, claude_unknown = priced_total("claude", claude_tokens[key]["models"])
+        codex_token_count = codex_tokens[key]["total"]["tokens"]
+        claude_token_count = claude_tokens[key]["total"]["tokens"]
         rows.append({
+            "key": key,
             "label": label,
-            "codex_tokens": fmt_tokens(codex_tokens[key]["total"]["tokens"]),
+            "codex_tokens": fmt_tokens(codex_token_count),
             "codex_cost": fmt_money(codex_total),
-            "claude_tokens": fmt_tokens(claude_tokens[key]["total"]["tokens"]),
+            "claude_tokens": fmt_tokens(claude_token_count),
             "claude_cost": fmt_money(claude_total),
             "unpriced": ", ".join(sorted(set(codex_unknown + claude_unknown))),
         })

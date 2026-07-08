@@ -7,68 +7,32 @@ ColumnLayout {
     id: root
 
     property string providerName: ""
-    property string title: ""
+    property string windowKey: "30d"
     property var tokens: ({})
     readonly property var windows: tokens && tokens.windows ? tokens.windows : []
+    readonly property var selected: selectedWindow()
 
-    spacing: Kirigami.Units.smallSpacing
+    spacing: Kirigami.Units.smallSpacing / 2
     Layout.fillWidth: true
 
     PlasmaComponents3.Label {
-        text: root.title
-        font.bold: true
+        text: root.selected[root.providerName + "_tokens"] || "--"
+        font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.25
         Layout.fillWidth: true
     }
 
-    RowLayout {
+    PlasmaComponents3.Label {
+        text: i18n("%1 API equivalent", root.selected[root.providerName + "_cost"] || "--")
+        opacity: 0.74
         Layout.fillWidth: true
-        spacing: Kirigami.Units.smallSpacing
-
-        PlasmaComponents3.Label {
-            text: i18n("Window")
-            opacity: 0.7
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 3
-        }
-
-        PlasmaComponents3.Label {
-            text: i18n("Tokens")
-            opacity: 0.7
-            horizontalAlignment: Text.AlignRight
-            Layout.fillWidth: true
-        }
-
-        PlasmaComponents3.Label {
-            text: i18n("Est. $")
-            opacity: 0.7
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 4
-        }
     }
 
-    Repeater {
-        model: root.windows
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
-
-            PlasmaComponents3.Label {
-                text: modelData.label || "--"
-                font.bold: true
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 3
-            }
-
-            PlasmaComponents3.Label {
-                text: modelData[root.providerName + "_tokens"] || "--"
-                horizontalAlignment: Text.AlignRight
-                Layout.fillWidth: true
-            }
-
-            PlasmaComponents3.Label {
-                text: modelData[root.providerName + "_cost"] || "--"
-                horizontalAlignment: Text.AlignRight
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 4
+    function selectedWindow() {
+        for (let i = 0; i < root.windows.length; i++) {
+            if (root.windows[i].key === root.windowKey) {
+                return root.windows[i];
             }
         }
+        return root.windows.length > 0 ? root.windows[0] : {};
     }
 }

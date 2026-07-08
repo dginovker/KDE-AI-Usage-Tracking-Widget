@@ -13,6 +13,8 @@ PlasmoidItem {
     readonly property int refreshMs: 10 * 60 * 1000
     readonly property string helperPath: fileUrlToPath(Qt.resolvedUrl("../code/widget_snapshot.py"))
     readonly property var providers: ["claude", "codex"]
+    readonly property var apiWindows: [{"key": "24h", "label": "24h"}, {"key": "7d", "label": "7d"}, {"key": "30d", "label": "30d"}, {"key": "lifetime", "label": "All"}]
+    property string apiWindow: "30d"
     property string activeSource: ""
     property var snapshot: ({})
     property bool loading: false
@@ -63,7 +65,7 @@ PlasmoidItem {
 
     fullRepresentation: PlasmaExtras.Representation {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 34
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 24
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 21
         collapseMarginsHint: true
 
         ColumnLayout {
@@ -92,12 +94,53 @@ PlasmoidItem {
                     }
                 }
 
+                RowLayout {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    Layout.topMargin: Kirigami.Units.largeSpacing
+                    spacing: Kirigami.Units.smallSpacing
+
+                    PlasmaComponents3.Label {
+                        text: i18n("API estimate")
+                        font.bold: true
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: root.apiWindows
+
+                        Rectangle {
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 2.4
+                            Layout.preferredHeight: Kirigami.Units.gridUnit * 1.35
+                            radius: Kirigami.Units.cornerRadius
+                            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, root.apiWindow === modelData.key ? 0.16 : 0.08)
+                            border.width: root.apiWindow === modelData.key ? 1 : 0
+                            border.color: "#3daee9"
+
+                            PlasmaComponents3.Label {
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: Kirigami.Theme.textColor
+                                font.bold: root.apiWindow === modelData.key
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: root.apiWindow = modelData.key
+                            }
+                        }
+                    }
+                }
+
                 Repeater {
                     model: root.providers
 
                     TokenCostPanel {
                         providerName: modelData
-                        title: modelData === "claude" ? i18n("Claude API estimate") : i18n("Codex API estimate")
+                        windowKey: root.apiWindow
                         tokens: root.snapshot.tokens || {}
                     }
                 }
