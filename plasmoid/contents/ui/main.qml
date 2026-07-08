@@ -63,7 +63,7 @@ PlasmoidItem {
 
     fullRepresentation: PlasmaExtras.Representation {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 34
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 31
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 21
         collapseMarginsHint: true
 
         ColumnLayout {

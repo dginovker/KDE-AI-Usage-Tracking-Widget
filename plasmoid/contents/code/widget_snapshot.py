@@ -28,6 +28,7 @@ HISTORY_LIMIT = 300
 MIN_CURRENT_DELTA = 4.0
 LIMIT_RETRY_RE = re.compile(r"try again at ([A-Z][a-z]+\.? \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)", re.I)
 OPENAI_PRICES = {
+    "gpt-5-codex": {"input": 1.25, "cached": 0.125, "output": 10.0},
     "gpt-5.5": {"input": 10.0, "cached": 1.0, "output": 45.0},
     "gpt-5.4-mini": {"input": 0.75, "cached": 0.075, "output": 4.5},
     "gpt-5.3-codex": {"input": 1.75, "cached": 0.175, "output": 14.0},
@@ -524,55 +525,15 @@ def window_token_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: di
     for key, label, _seconds in TOKEN_WINDOWS:
         codex_total, codex_unknown = priced_total("codex", codex_tokens[key]["models"])
         claude_total, claude_unknown = priced_total("claude", claude_tokens[key]["models"])
-        total_tokens = codex_tokens[key]["total"]["tokens"] + claude_tokens[key]["total"]["tokens"]
         rows.append({
             "label": label,
-            "cost": fmt_money(codex_total + claude_total),
-            "tokens": fmt_tokens(total_tokens),
-            "codex": f"{fmt_money(codex_total)} / {fmt_tokens(codex_tokens[key]['total']['tokens'])}",
-            "claude": f"{fmt_money(claude_total)} / {fmt_tokens(claude_tokens[key]['total']['tokens'])}",
+            "codex_tokens": fmt_tokens(codex_tokens[key]["total"]["tokens"]),
+            "codex_cost": fmt_money(codex_total),
+            "claude_tokens": fmt_tokens(claude_tokens[key]["total"]["tokens"]),
+            "claude_cost": fmt_money(claude_total),
             "unpriced": ", ".join(sorted(set(codex_unknown + claude_unknown))),
         })
     return rows
-
-
-def cache_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    codex_30d = codex_tokens["30d"]["total"]
-    claude_30d = claude_tokens["30d"]["total"]
-    codex_cached = codex_30d["cached"]
-    codex_input = codex_30d["input"]
-    cached_share = round(codex_cached * 100 / codex_input) if codex_input else 0
-    return [
-        {
-            "provider": "Codex",
-            "primary": f"{fmt_tokens(codex_cached)} cached ({cached_share}%)",
-            "detail": f"{fmt_tokens(max(0, codex_input - codex_cached))} uncached, {fmt_tokens(codex_30d['output'])} output",
-        },
-        {
-            "provider": "Claude",
-            "primary": f"{fmt_tokens(claude_30d['read'])} cache read",
-            "detail": f"{fmt_tokens(claude_30d['write5'] + claude_30d['write1h'] + claude_30d['write_unknown'])} cache write, {fmt_tokens(claude_30d['output'])} output",
-        },
-    ]
-
-
-def top_model_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    rows = []
-    for provider, data in (("codex", codex_tokens), ("claude", claude_tokens)):
-        for model, values in data["30d"]["models"].items():
-            if values["tokens"] <= 0:
-                continue
-            cost = provider_cost(provider, model, values)
-            rows.append({
-                "provider": provider.capitalize(),
-                "model": model,
-                "cost": fmt_money(cost),
-                "tokens": fmt_tokens(values["tokens"]),
-                "sort_cost": -1.0 if cost is None else cost,
-                "sort_tokens": values["tokens"],
-            })
-    rows.sort(key=lambda item: (item["sort_cost"], item["sort_tokens"]), reverse=True)
-    return [{key: value for key, value in row.items() if not key.startswith("sort_")} for row in rows[:8]]
 
 
 def token_stats() -> dict[str, Any]:
@@ -582,8 +543,6 @@ def token_stats() -> dict[str, Any]:
     unknown = sorted({row["unpriced"] for row in windows if row["unpriced"]})
     return {
         "windows": windows,
-        "cache": cache_rows(codex_tokens, claude_tokens),
-        "models": top_model_rows(codex_tokens, claude_tokens),
         "note": "Unpriced models excluded from cost: " + "; ".join(unknown) if unknown else "",
     }
 
