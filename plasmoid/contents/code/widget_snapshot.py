@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as dt
 import json
 import math
@@ -19,12 +20,30 @@ CLAUDE_CACHE = CACHE / "claude-statusline.json"
 HISTORY_CACHE = CACHE / "usage-history.json"
 PROVIDERS = ("claude", "codex")
 WINDOWS = {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}
+TOKEN_WINDOWS = (("lifetime", "Lifetime", None), ("30d", "30d", 30 * 86400), ("7d", "7d", 7 * 86400), ("24h", "24h", 86400), ("1h", "1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "limited": "#da4453"}
 TARGET_USED = 80.0
 FULL_USED = 99.5
 HISTORY_LIMIT = 300
 MIN_CURRENT_DELTA = 4.0
 LIMIT_RETRY_RE = re.compile(r"try again at ([A-Z][a-z]+\.? \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)", re.I)
+OPENAI_PRICES = {
+    "gpt-5.5": {"input": 10.0, "cached": 1.0, "output": 45.0},
+    "gpt-5.4-mini": {"input": 0.75, "cached": 0.075, "output": 4.5},
+    "gpt-5.3-codex": {"input": 1.75, "cached": 0.175, "output": 14.0},
+}
+CLAUDE_PRICES = {
+    "claude-fable-5": {"input": 10.0, "write5": 12.5, "write1h": 20.0, "read": 1.0, "output": 50.0},
+    "claude-opus-4-8": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
+    "claude-opus-4-7": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
+    "claude-opus-4-6": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
+    "claude-opus-4-5": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
+    "claude-opus-4-1": {"input": 15.0, "write5": 18.75, "write1h": 30.0, "read": 1.5, "output": 75.0},
+    "claude-opus-4": {"input": 15.0, "write5": 18.75, "write1h": 30.0, "read": 1.5, "output": 75.0},
+    "claude-sonnet-5": {"input": 2.0, "write5": 2.5, "write1h": 4.0, "read": 0.2, "output": 10.0},
+    "claude-sonnet-4-6": {"input": 3.0, "write5": 3.75, "write1h": 6.0, "read": 0.3, "output": 15.0},
+    "claude-haiku-4-5-20251001": {"input": 1.0, "write5": 1.25, "write1h": 2.0, "read": 0.1, "output": 5.0},
+}
 
 
 def now() -> dt.datetime:
@@ -336,8 +355,241 @@ def claude() -> dict[str, Any]:
     }
 
 
+def as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def fmt_tokens(value: int) -> str:
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f}B"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+def fmt_money(value: float | None) -> str:
+    if value is None:
+        return "unpriced"
+    if value >= 100:
+        return f"${value:,.0f}"
+    return f"${value:,.2f}"
+
+
+def token_window_ids(when: dt.datetime | None) -> list[str]:
+    if when is None:
+        return []
+    age = (now() - when).total_seconds()
+    return [key for key, _label, seconds in TOKEN_WINDOWS if seconds is None or age <= seconds]
+
+
+def empty_token_windows() -> dict[str, dict[str, Any]]:
+    return {key: {"total": collections.Counter(), "models": collections.defaultdict(collections.Counter)} for key, _label, _seconds in TOKEN_WINDOWS}
+
+
+def add_tokens(windows: dict[str, dict[str, Any]], when: dt.datetime | None, model: str, values: dict[str, int]) -> None:
+    for key in token_window_ids(when):
+        windows[key]["total"].update(values)
+        windows[key]["models"][model].update(values)
+
+
+def codex_model_map(home: Path) -> dict[str, str]:
+    db = home / "state_5.sqlite"
+    if not db.exists():
+        return {}
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            return {str(Path(path)): model or "unknown" for path, model in conn.execute("select rollout_path, model from threads") if path}
+    except sqlite3.Error:
+        return {}
+
+
+def aggregate_codex_tokens() -> dict[str, dict[str, Any]]:
+    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    root = home / "sessions"
+    windows = empty_token_windows()
+    models = codex_model_map(home)
+    if not root.exists():
+        return windows
+
+    for path in root.rglob("*.jsonl"):
+        model = models.get(str(path), "unknown")
+        previous = {key: 0 for key in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")}
+        for obj in jsonl(path):
+            payload = obj.get("payload") or {}
+            if isinstance(payload.get("model"), str):
+                model = payload["model"]
+            else:
+                collaboration = payload.get("collaboration_mode")
+                mode = (collaboration.get("settings") if isinstance(collaboration, dict) else None) or {}
+                model = mode.get("model") if isinstance(mode.get("model"), str) else model
+
+            if obj.get("type") != "event_msg" or payload.get("type") != "token_count":
+                continue
+            total = ((payload.get("info") or {}).get("total_token_usage") or {})
+            if not total:
+                continue
+            current = {key: as_int(total.get(key)) for key in previous}
+            delta = {key: max(0, current[key] - previous[key]) for key in previous}
+            previous = current
+            add_tokens(windows, parse_time(obj.get("timestamp")), model, {
+                "input": delta["input_tokens"],
+                "cached": delta["cached_input_tokens"],
+                "output": delta["output_tokens"],
+                "reasoning": delta["reasoning_output_tokens"],
+                "tokens": delta["total_tokens"],
+            })
+    return windows
+
+
+def aggregate_claude_tokens() -> dict[str, dict[str, Any]]:
+    root = Path(os.environ.get("CLAUDE_HOME", "~/.claude")).expanduser() / "projects"
+    windows = empty_token_windows()
+    seen = set()
+    if not root.exists():
+        return windows
+
+    for path in root.rglob("*.jsonl"):
+        for obj in jsonl(path):
+            message = obj.get("message") or {}
+            usage = message.get("usage") or {}
+            if obj.get("type") != "assistant" or not isinstance(usage, dict):
+                continue
+            event_id = message.get("id") or obj.get("requestId") or obj.get("uuid") or (str(path), obj.get("timestamp"))
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+            cache = usage.get("cache_creation") or {}
+            write5 = as_int(cache.get("ephemeral_5m_input_tokens"))
+            write1h = as_int(cache.get("ephemeral_1h_input_tokens"))
+            write_total = as_int(usage.get("cache_creation_input_tokens"))
+            values = {
+                "input": as_int(usage.get("input_tokens")),
+                "write5": write5,
+                "write1h": write1h,
+                "write_unknown": max(0, write_total - write5 - write1h),
+                "read": as_int(usage.get("cache_read_input_tokens")),
+                "output": as_int(usage.get("output_tokens")),
+            }
+            values["tokens"] = sum(values.values())
+            add_tokens(windows, parse_time(obj.get("timestamp")), message.get("model") or "unknown", values)
+    return windows
+
+
+def codex_cost(model: str, values: collections.Counter) -> float | None:
+    rates = OPENAI_PRICES.get(model)
+    if rates is None:
+        return None
+    uncached = max(0, values["input"] - values["cached"])
+    return (uncached * rates["input"] + values["cached"] * rates["cached"] + values["output"] * rates["output"]) / 1_000_000
+
+
+def claude_cost(model: str, values: collections.Counter) -> float | None:
+    rates = CLAUDE_PRICES.get(model)
+    if rates is None:
+        return None
+    return (
+        values["input"] * rates["input"]
+        + values["write5"] * rates["write5"]
+        + values["write1h"] * rates["write1h"]
+        + values["write_unknown"] * rates["write5"]
+        + values["read"] * rates["read"]
+        + values["output"] * rates["output"]
+    ) / 1_000_000
+
+
+def provider_cost(provider: str, model: str, values: collections.Counter) -> float | None:
+    return codex_cost(model, values) if provider == "codex" else claude_cost(model, values)
+
+
+def priced_total(provider: str, models: dict[str, collections.Counter]) -> tuple[float, list[str]]:
+    total, unknown = 0.0, []
+    for model, values in models.items():
+        if values["tokens"] <= 0:
+            continue
+        cost = provider_cost(provider, model, values)
+        if cost is None:
+            unknown.append(model)
+        else:
+            total += cost
+    return total, unknown
+
+
+def window_token_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    rows = []
+    for key, label, _seconds in TOKEN_WINDOWS:
+        codex_total, codex_unknown = priced_total("codex", codex_tokens[key]["models"])
+        claude_total, claude_unknown = priced_total("claude", claude_tokens[key]["models"])
+        total_tokens = codex_tokens[key]["total"]["tokens"] + claude_tokens[key]["total"]["tokens"]
+        rows.append({
+            "label": label,
+            "cost": fmt_money(codex_total + claude_total),
+            "tokens": fmt_tokens(total_tokens),
+            "codex": f"{fmt_money(codex_total)} / {fmt_tokens(codex_tokens[key]['total']['tokens'])}",
+            "claude": f"{fmt_money(claude_total)} / {fmt_tokens(claude_tokens[key]['total']['tokens'])}",
+            "unpriced": ", ".join(sorted(set(codex_unknown + claude_unknown))),
+        })
+    return rows
+
+
+def cache_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    codex_30d = codex_tokens["30d"]["total"]
+    claude_30d = claude_tokens["30d"]["total"]
+    codex_cached = codex_30d["cached"]
+    codex_input = codex_30d["input"]
+    cached_share = round(codex_cached * 100 / codex_input) if codex_input else 0
+    return [
+        {
+            "provider": "Codex",
+            "primary": f"{fmt_tokens(codex_cached)} cached ({cached_share}%)",
+            "detail": f"{fmt_tokens(max(0, codex_input - codex_cached))} uncached, {fmt_tokens(codex_30d['output'])} output",
+        },
+        {
+            "provider": "Claude",
+            "primary": f"{fmt_tokens(claude_30d['read'])} cache read",
+            "detail": f"{fmt_tokens(claude_30d['write5'] + claude_30d['write1h'] + claude_30d['write_unknown'])} cache write, {fmt_tokens(claude_30d['output'])} output",
+        },
+    ]
+
+
+def top_model_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    rows = []
+    for provider, data in (("codex", codex_tokens), ("claude", claude_tokens)):
+        for model, values in data["30d"]["models"].items():
+            if values["tokens"] <= 0:
+                continue
+            cost = provider_cost(provider, model, values)
+            rows.append({
+                "provider": provider.capitalize(),
+                "model": model,
+                "cost": fmt_money(cost),
+                "tokens": fmt_tokens(values["tokens"]),
+                "sort_cost": -1.0 if cost is None else cost,
+                "sort_tokens": values["tokens"],
+            })
+    rows.sort(key=lambda item: (item["sort_cost"], item["sort_tokens"]), reverse=True)
+    return [{key: value for key, value in row.items() if not key.startswith("sort_")} for row in rows[:8]]
+
+
+def token_stats() -> dict[str, Any]:
+    codex_tokens = aggregate_codex_tokens()
+    claude_tokens = aggregate_claude_tokens()
+    windows = window_token_rows(codex_tokens, claude_tokens)
+    unknown = sorted({row["unpriced"] for row in windows if row["unpriced"]})
+    return {
+        "windows": windows,
+        "cache": cache_rows(codex_tokens, claude_tokens),
+        "models": top_model_rows(codex_tokens, claude_tokens),
+        "note": "Unpriced models excluded from cost: " + "; ".join(unknown) if unknown else "",
+    }
+
+
 def snapshot(days: int) -> int:
-    data = {"codex": codex(days), "claude": claude()}
+    data = {"codex": codex(days), "claude": claude(), "tokens": token_stats()}
     history = append_history(read_json(HISTORY_CACHE) or {}, data)
     apply_history(data, history)
     save_history(history)

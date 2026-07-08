@@ -62,8 +62,8 @@ PlasmoidItem {
     }
 
     fullRepresentation: PlasmaExtras.Representation {
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 22
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 16
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 34
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 31
         collapseMarginsHint: true
 
         ColumnLayout {
@@ -106,6 +106,11 @@ PlasmoidItem {
                 text: i18n("Claude usage will appear after the next Claude Code response.")
                 opacity: 0.7
                 wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            TokenCostPanel {
+                tokens: root.snapshot.tokens || {}
                 Layout.fillWidth: true
             }
 
