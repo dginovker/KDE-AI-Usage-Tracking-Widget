@@ -10,6 +10,9 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -18,7 +21,7 @@ from typing import Any
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
 CLAUDE_CACHE = CACHE / "claude-statusline.json"
 HISTORY_CACHE = CACHE / "usage-history.json"
-PROVIDERS = ("claude", "codex")
+PROVIDERS = ("claude", "codex", "kimi")
 WINDOWS = {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}
 TOKEN_WINDOWS = (("lifetime", "Lifetime", None), ("30d", "30d", 30 * 86400), ("7d", "7d", 7 * 86400), ("24h", "24h", 86400), ("1h", "1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "limited": "#da4453"}
@@ -45,6 +48,14 @@ CLAUDE_PRICES = {
     "claude-sonnet-4-6": {"input": 3.0, "write5": 3.75, "write1h": 6.0, "read": 0.3, "output": 15.0},
     "claude-haiku-4-5-20251001": {"input": 1.0, "write5": 1.25, "write1h": 2.0, "read": 0.1, "output": 5.0},
 }
+KIMI_PRICES = {
+    "kimi-code/kimi-for-coding": {"input": 0.95, "cached": 0.19, "output": 4.0},
+    "kimi-k2.7-code": {"input": 0.95, "cached": 0.19, "output": 4.0},
+    "kimi-k2.7-code-highspeed": {"input": 1.9, "cached": 0.38, "output": 8.0},
+}
+KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
+KIMI_AUTH_HOST = "https://auth.kimi.com"
 
 
 def now() -> dt.datetime:
@@ -178,6 +189,156 @@ def quota(limits: dict[str, Any] | None, name: str, event_time: dt.datetime | No
     used = percent(payload.get("used_percent", payload.get("used_percentage")))
     window = int(payload.get("window_minutes") or WINDOWS.get(name) or 0) or None
     return {"used": used, **reset_meta(reset), **quota_health(used, reset, window)}
+
+
+def reset_epoch_from(raw: dict[str, Any]) -> float | None:
+    for key in ("reset_at", "resetAt", "reset_time", "resetTime"):
+        parsed = parse_time(raw.get(key))
+        if parsed:
+            return parsed.timestamp()
+    for key in ("reset_in", "resetIn", "ttl"):
+        seconds = as_float(raw.get(key))
+        if seconds is not None and seconds > 0:
+            return now().timestamp() + seconds
+    return None
+
+
+def ratio_quota(raw: dict[str, Any] | None, window_minutes: int | None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return blank_quota()
+    used = as_float(raw.get("used"))
+    limit = as_float(raw.get("limit"))
+    remaining = as_float(raw.get("remaining"))
+    if used is None and remaining is not None and limit is not None:
+        used = limit - remaining
+    used_percent = percent(None if used is None or not limit else used * 100.0 / limit)
+    reset = reset_epoch_from(raw)
+    return {"used": used_percent, **reset_meta(reset), **quota_health(used_percent, reset, window_minutes)}
+
+
+def kimi_home() -> Path:
+    return Path(os.environ.get("KIMI_CODE_HOME", "~/.kimi-code")).expanduser()
+
+
+def kimi_version(home: Path) -> str:
+    for path in (home / "updates" / "latest.json", home / "updates" / "install.json"):
+        data = read_json(path) or {}
+        for value in (data.get("latest"), data.get("version")):
+            if isinstance(value, str) and value:
+                return value
+    return "0.23.1"
+
+
+def kimi_device_headers(home: Path) -> dict[str, str]:
+    headers = {"X-Msh-Platform": "kimi_code_cli", "X-Msh-Version": kimi_version(home)}
+    try:
+        device_id = (home / "device_id").read_text(encoding="utf-8").strip()
+        if device_id:
+            headers["X-Msh-Device-Id"] = device_id
+    except OSError:
+        pass
+    return headers
+
+
+def request_json(url: str, headers: dict[str, str], body: bytes | None = None) -> dict[str, Any]:
+    req = urllib.request.Request(url, data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=8) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_kimi_credentials(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def refresh_kimi_token(home: Path, credentials: dict[str, Any]) -> str | None:
+    refresh = credentials.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        return None
+    body = urllib.parse.urlencode({
+        "client_id": KIMI_CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+    }).encode("utf-8")
+    payload = request_json(
+        os.environ.get("KIMI_CODE_OAUTH_HOST", os.environ.get("KIMI_OAUTH_HOST", KIMI_AUTH_HOST)).rstrip("/") + "/api/oauth/token",
+        {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", **kimi_device_headers(home)},
+        body,
+    )
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        return None
+    updated = {**credentials, **payload}
+    expires_in = as_float(updated.get("expires_in"))
+    if expires_in:
+        updated["expires_at"] = int(now().timestamp() + expires_in)
+    save_kimi_credentials(home / "credentials" / "kimi-code.json", updated)
+    return token
+
+
+def kimi_access_token(home: Path, force_refresh: bool = False) -> str | None:
+    credentials = read_json(home / "credentials" / "kimi-code.json") or {}
+    token = credentials.get("access_token")
+    expires_at = as_float(credentials.get("expires_at"))
+    if expires_at is not None and expires_at > 10**12:
+        expires_at /= 1000.0
+    if not force_refresh and isinstance(token, str) and token and (expires_at is None or expires_at - now().timestamp() > 60):
+        return token
+    try:
+        return refresh_kimi_token(home, credentials)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return token if isinstance(token, str) and token else None
+
+
+def kimi_payload(home: Path) -> dict[str, Any] | None:
+    base_url = os.environ.get("KIMI_CODE_BASE_URL", KIMI_BASE_URL).rstrip("/")
+    token = kimi_access_token(home)
+    if not token:
+        return None
+    try:
+        return request_json(base_url + "/usages", {"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    except urllib.error.HTTPError as error:
+        if error.code != 401:
+            raise
+        token = kimi_access_token(home, True)
+        if not token:
+            return None
+        return request_json(base_url + "/usages", {"Authorization": f"Bearer {token}", "Accept": "application/json"})
+
+
+def kimi_window_minutes(raw: dict[str, Any]) -> int | None:
+    duration_value = (raw.get("window") or {}).get("duration") if isinstance(raw.get("window"), dict) else raw.get("duration")
+    duration = as_float(duration_value)
+    if duration is None:
+        return None
+    unit = str((raw.get("window") or {}).get("timeUnit") if isinstance(raw.get("window"), dict) else raw.get("timeUnit")).upper()
+    if "MINUTE" in unit:
+        return int(duration)
+    if "HOUR" in unit:
+        return int(duration * 60)
+    if "DAY" in unit:
+        return int(duration * 1440)
+    return int(duration / 60) if duration > 1000 else int(duration)
+
+
+def kimi() -> dict[str, Any]:
+    try:
+        payload = kimi_payload(kimi_home()) or {}
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        payload = {}
+    weekly_raw = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+    limits = payload.get("limits") if isinstance(payload.get("limits"), list) else []
+    current_item = next((item for item in limits if isinstance(item, dict) and kimi_window_minutes(item) == 300), None)
+    current_raw = (current_item or {}).get("detail") if isinstance((current_item or {}).get("detail"), dict) else current_item
+    return {
+        "available": bool(weekly_raw or current_raw),
+        "current": ratio_quota(current_raw, kimi_window_minutes(current_item or {}) or 300),
+        "weekly": ratio_quota(weekly_raw, 7 * 24 * 60),
+    }
 
 
 def history_record(data: dict[str, Any], provider: str) -> dict[str, Any] | None:
@@ -481,6 +642,29 @@ def aggregate_claude_tokens() -> dict[str, dict[str, Any]]:
     return windows
 
 
+def aggregate_kimi_tokens() -> dict[str, dict[str, Any]]:
+    root = kimi_home() / "sessions"
+    windows = empty_token_windows()
+    if not root.exists():
+        return windows
+
+    for path in root.rglob("wire.jsonl"):
+        for obj in jsonl(path):
+            usage = obj.get("usage") or {}
+            if obj.get("type") != "usage.record" or obj.get("usageScope") != "turn" or not isinstance(usage, dict):
+                continue
+            values = {
+                "input": as_int(usage.get("inputOther")) + as_int(usage.get("inputCacheCreation")),
+                "cached": as_int(usage.get("inputCacheRead")),
+                "output": as_int(usage.get("output")),
+            }
+            values["tokens"] = sum(values.values())
+            event_time = as_float(obj.get("time"))
+            when = dt.datetime.fromtimestamp(event_time / 1000, dt.timezone.utc).astimezone() if event_time else None
+            add_tokens(windows, when, obj.get("model") or "unknown", values)
+    return windows
+
+
 def codex_cost(model: str, values: collections.Counter) -> float | None:
     rates = OPENAI_PRICES.get(model)
     if rates is None:
@@ -503,8 +687,19 @@ def claude_cost(model: str, values: collections.Counter) -> float | None:
     ) / 1_000_000
 
 
+def kimi_cost(model: str, values: collections.Counter) -> float | None:
+    rates = KIMI_PRICES.get(model)
+    if rates is None:
+        return None
+    return (values["input"] * rates["input"] + values["cached"] * rates["cached"] + values["output"] * rates["output"]) / 1_000_000
+
+
 def provider_cost(provider: str, model: str, values: collections.Counter) -> float | None:
-    return codex_cost(model, values) if provider == "codex" else claude_cost(model, values)
+    if provider == "codex":
+        return codex_cost(model, values)
+    if provider == "kimi":
+        return kimi_cost(model, values)
+    return claude_cost(model, values)
 
 
 def priced_total(provider: str, models: dict[str, collections.Counter]) -> tuple[float, list[str]]:
@@ -520,29 +715,29 @@ def priced_total(provider: str, models: dict[str, collections.Counter]) -> tuple
     return total, unknown
 
 
-def window_token_rows(codex_tokens: dict[str, dict[str, Any]], claude_tokens: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+def window_token_rows(provider_tokens: dict[str, dict[str, dict[str, Any]]]) -> list[dict[str, Any]]:
     rows = []
     for key, label, _seconds in TOKEN_WINDOWS:
-        codex_total, codex_unknown = priced_total("codex", codex_tokens[key]["models"])
-        claude_total, claude_unknown = priced_total("claude", claude_tokens[key]["models"])
-        codex_token_count = codex_tokens[key]["total"]["tokens"]
-        claude_token_count = claude_tokens[key]["total"]["tokens"]
-        rows.append({
-            "key": key,
-            "label": label,
-            "codex_tokens": fmt_tokens(codex_token_count),
-            "codex_cost": fmt_money(codex_total),
-            "claude_tokens": fmt_tokens(claude_token_count),
-            "claude_cost": fmt_money(claude_total),
-            "unpriced": ", ".join(sorted(set(codex_unknown + claude_unknown))),
-        })
+        row, providers, unknown = {"key": key, "label": label}, {}, []
+        for provider, tokens in provider_tokens.items():
+            total, unpriced = priced_total(provider, tokens[key]["models"])
+            unknown.extend(unpriced)
+            values = {"tokens": fmt_tokens(tokens[key]["total"]["tokens"]), "cost": fmt_money(total)}
+            providers[provider] = values
+            row[f"{provider}_tokens"] = values["tokens"]
+            row[f"{provider}_cost"] = values["cost"]
+        row["providers"] = providers
+        row["unpriced"] = ", ".join(sorted(set(unknown)))
+        rows.append(row)
     return rows
 
 
 def token_stats() -> dict[str, Any]:
-    codex_tokens = aggregate_codex_tokens()
-    claude_tokens = aggregate_claude_tokens()
-    windows = window_token_rows(codex_tokens, claude_tokens)
+    windows = window_token_rows({
+        "codex": aggregate_codex_tokens(),
+        "claude": aggregate_claude_tokens(),
+        "kimi": aggregate_kimi_tokens(),
+    })
     unknown = sorted({row["unpriced"] for row in windows if row["unpriced"]})
     return {
         "windows": windows,
@@ -551,7 +746,7 @@ def token_stats() -> dict[str, Any]:
 
 
 def snapshot(days: int) -> int:
-    data = {"codex": codex(days), "claude": claude(), "tokens": token_stats()}
+    data = {"codex": codex(days), "claude": claude(), "kimi": kimi(), "tokens": token_stats()}
     history = append_history(read_json(HISTORY_CACHE) or {}, data)
     apply_history(data, history)
     save_history(history)

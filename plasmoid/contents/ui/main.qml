@@ -12,7 +12,8 @@ PlasmoidItem {
 
     readonly property int refreshMs: 10 * 60 * 1000
     readonly property string helperPath: fileUrlToPath(Qt.resolvedUrl("../code/widget_snapshot.py"))
-    readonly property var providers: ["claude", "codex"]
+    readonly property var providerCatalog: [{"key": "claude", "label": i18n("Claude")}, {"key": "codex", "label": i18n("Codex")}, {"key": "kimi", "label": i18n("Kimi")}]
+    readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi)
     readonly property var apiWindows: [{"key": "24h", "label": "24h"}, {"key": "7d", "label": "7d"}, {"key": "30d", "label": "30d"}, {"key": "lifetime", "label": "All"}]
     property string apiWindow: "30d"
     property string activeSource: ""
@@ -30,9 +31,9 @@ PlasmoidItem {
     compactRepresentation: Item {
         id: compact
 
-        Layout.minimumWidth: Kirigami.Units.iconSizes.medium * 2 + Kirigami.Units.smallSpacing
+        Layout.minimumWidth: Kirigami.Units.iconSizes.medium * root.providers.length + Kirigami.Units.smallSpacing * Math.max(0, root.providers.length - 1)
         Layout.minimumHeight: Kirigami.Units.iconSizes.medium
-        Layout.preferredWidth: Kirigami.Units.iconSizes.medium * 2 + Kirigami.Units.smallSpacing
+        Layout.preferredWidth: Layout.minimumWidth
         Layout.preferredHeight: Kirigami.Units.iconSizes.medium
 
         RowLayout {
@@ -64,7 +65,7 @@ PlasmoidItem {
     }
 
     fullRepresentation: PlasmaExtras.Representation {
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 34
+        Layout.minimumWidth: Kirigami.Units.gridUnit * Math.max(34, root.providers.length * 17)
         Layout.minimumHeight: Kirigami.Units.gridUnit * 21
         collapseMarginsHint: true
 
@@ -80,7 +81,7 @@ PlasmoidItem {
             }
 
             GridLayout {
-                columns: 2
+                columns: root.providers.length
                 columnSpacing: Kirigami.Units.largeSpacing
                 rowSpacing: Kirigami.Units.largeSpacing
                 Layout.fillWidth: true
@@ -89,13 +90,13 @@ PlasmoidItem {
                     model: root.providers
 
                     ProviderPanel {
-                        title: modelData === "claude" ? i18n("Claude") : i18n("Codex")
+                        title: root.providerLabel(modelData)
                         provider: root.provider(modelData)
                     }
                 }
 
                 RowLayout {
-                    Layout.columnSpan: 2
+                    Layout.columnSpan: root.providers.length
                     Layout.fillWidth: true
                     Layout.topMargin: Kirigami.Units.largeSpacing
                     spacing: Kirigami.Units.smallSpacing
@@ -235,6 +236,29 @@ PlasmoidItem {
 
     function provider(providerName) {
         return snapshot && typeof snapshot === "object" ? snapshot[providerName] || {} : {};
+    }
+
+    function providerList(showClaude, showCodex, showKimi) {
+        var selected = [];
+        if (showClaude !== false) {
+            selected.push("claude");
+        }
+        if (showCodex !== false) {
+            selected.push("codex");
+        }
+        if (showKimi !== false) {
+            selected.push("kimi");
+        }
+        return selected.length > 0 ? selected : ["claude", "codex", "kimi"];
+    }
+
+    function providerLabel(providerName) {
+        for (var i = 0; i < providerCatalog.length; i++) {
+            if (providerCatalog[i].key === providerName) {
+                return providerCatalog[i].label;
+            }
+        }
+        return providerName;
     }
 
     function quota(providerName, quotaName) {
