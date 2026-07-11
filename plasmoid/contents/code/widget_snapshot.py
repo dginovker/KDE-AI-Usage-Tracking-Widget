@@ -4,12 +4,16 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import fcntl
 import json
 import math
 import os
-import re
+import select
+import shutil
 import sqlite3
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,12 +28,11 @@ HISTORY_CACHE = CACHE / "usage-history.json"
 PROVIDERS = ("claude", "codex", "kimi")
 WINDOWS = {"primary": 300, "five_hour": 300, "secondary": 10080, "seven_day": 10080}
 TOKEN_WINDOWS = (("lifetime", "Lifetime", None), ("30d", "30d", 30 * 86400), ("7d", "7d", 7 * 86400), ("24h", "24h", 86400), ("1h", "1h", 3600))
-COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9", "limited": "#da4453"}
+COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED = 80.0
 FULL_USED = 99.5
 HISTORY_LIMIT = 300
 MIN_CURRENT_DELTA = 4.0
-LIMIT_RETRY_RE = re.compile(r"try again at ([A-Z][a-z]+\.? \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)", re.I)
 OPENAI_PRICES = {
     "gpt-5-codex": {"input": 1.25, "cached": 0.125, "output": 10.0},
     "gpt-5.5": {"input": 10.0, "cached": 1.0, "output": 45.0},
@@ -83,19 +86,6 @@ def parse_time(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
     except ValueError:
         return None
-
-
-def parse_retry_time(text: str) -> dt.datetime | None:
-    match = LIMIT_RETRY_RE.search(text)
-    if not match:
-        return None
-    value = re.sub(r"(\d{1,2})(st|nd|rd|th)", r"\1", match.group(1), flags=re.I)
-    for fmt in ("%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
-        try:
-            return dt.datetime.strptime(value, fmt).replace(tzinfo=now().tzinfo)
-        except ValueError:
-            pass
-    return None
 
 
 def reset_meta(epoch: Any) -> dict[str, Any]:
@@ -174,20 +164,16 @@ def blank_quota() -> dict[str, Any]:
     return {"used": None, **reset_meta(None), **quota_health(None, None, None)}
 
 
-def limited_quota(reset_epoch: float, used: float | None = 100.0) -> dict[str, Any]:
-    return {"used": used, **reset_meta(reset_epoch), "pace": "Limited", "color": COLORS["limited"]}
-
-
 def quota(limits: dict[str, Any] | None, name: str, event_time: dt.datetime | None) -> dict[str, Any]:
     payload = (limits or {}).get(name)
     if not isinstance(payload, dict):
         return blank_quota()
 
-    reset = payload.get("resets_at")
+    reset = payload.get("resets_at", payload.get("resetsAt"))
     if reset is None and payload.get("resets_in_seconds") is not None and event_time is not None:
         reset = event_time.timestamp() + float(payload["resets_in_seconds"])
-    used = percent(payload.get("used_percent", payload.get("used_percentage")))
-    window = int(payload.get("window_minutes") or WINDOWS.get(name) or 0) or None
+    used = percent(payload.get("used_percent", payload.get("used_percentage", payload.get("usedPercent"))))
+    window = int(payload.get("window_minutes") or payload.get("windowDurationMins") or WINDOWS.get(name) or 0) or None
     return {"used": used, **reset_meta(reset), **quota_health(used, reset, window)}
 
 
@@ -443,75 +429,86 @@ def jsonl(path: Path):
         return
 
 
-def latest_token_event(paths: list[Path]) -> tuple[dict[str, Any] | None, dt.datetime | None]:
-    latest, latest_time = None, dt.datetime.min.replace(tzinfo=dt.timezone.utc)
-    preferred, preferred_time = None, latest_time
-    for path in paths:
-        for obj in jsonl(path):
-            payload = obj.get("payload") or {}
-            when = parse_time(obj.get("timestamp"))
-            if obj.get("type") == "event_msg" and payload.get("type") == "token_count" and when and when > latest_time:
-                latest, latest_time = payload, when
-            if obj.get("type") == "event_msg" and payload.get("type") == "token_count" and when and when > preferred_time:
-                if (payload.get("rate_limits") or {}).get("limit_id") == "codex":
-                    preferred, preferred_time = payload, when
-    return (preferred, preferred_time) if preferred else (latest, latest_time if latest else None)
-
-
-def latest_limit_event(paths: list[Path]) -> tuple[float | None, dt.datetime | None]:
-    latest_reset, latest_time = None, dt.datetime.min.replace(tzinfo=dt.timezone.utc)
-    for path in paths:
-        for obj in jsonl(path):
-            when = parse_time(obj.get("timestamp"))
-            if not when or when <= latest_time:
-                continue
-            text = json.dumps(obj.get("payload") or {}, ensure_ascii=False)
-            if "usage limit" not in text.lower() and "try again at" not in text.lower():
-                continue
-            retry = parse_retry_time(text)
-            if retry and retry > now():
-                latest_reset, latest_time = retry.timestamp(), when
-    return latest_reset, latest_time if latest_reset else None
-
-
-def codex_paths(home: Path, thread_path: Path | None, days: int) -> list[Path]:
-    if thread_path and thread_path.exists():
-        return [thread_path]
-    root = home / "sessions"
-    if not root.exists():
-        return []
-    cutoff = now().timestamp() - days * 86400
-    return [p for p in root.rglob("*.jsonl") if p.stat().st_mtime >= cutoff]
-
-
-def codex(days: int) -> dict[str, Any]:
-    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
-    thread_path = None
-    db = home / "state_5.sqlite"
-    if db.exists():
+def codex_rpc(process: subprocess.Popen, request: dict[str, Any], timeout: float = 5) -> dict[str, Any] | None:
+    if process.stdin is None or process.stdout is None:
+        return None
+    process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+    process.stdin.flush()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([process.stdout], [], [], deadline - time.monotonic())
+        if not ready:
+            break
+        line = process.stdout.readline()
+        if not line:
+            break
         try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                row = conn.execute("select rollout_path from threads order by updated_at_ms desc limit 1").fetchone()
-                thread_path = Path(row[0]) if row and row[0] else None
-        except sqlite3.Error:
-            pass
-
-    all_paths = codex_paths(home, None, days)
-    payload, when = latest_token_event(all_paths)
-    limit_reset, limit_when = latest_limit_event(all_paths)
-    limited = limit_reset is not None and (when is None or (limit_when is not None and limit_when > when))
-    current = quota((payload or {}).get("rate_limits"), "primary", when)
-    weekly = quota((payload or {}).get("rate_limits"), "secondary", when)
-    if limited:
-        current, weekly = limited_quota(limit_reset, None), limited_quota(limit_reset)
-    return {"available": bool(payload or thread_path or limited), "current": current, "weekly": weekly}
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("id") == request.get("id"):
+            result = message.get("result")
+            return result if isinstance(result, dict) else None
+    return None
 
 
-def claude() -> dict[str, Any]:
+def codex() -> dict[str, Any]:
+    binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+    process = None
+    try:
+        process = subprocess.Popen(
+            [binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1,
+        )
+        initialized = codex_rpc(process, {
+            "method": "initialize", "id": 1,
+            "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}},
+        })
+        if initialized is None or process.stdin is None:
+            return {"available": False, "current": blank_quota(), "weekly": blank_quota()}
+        process.stdin.write('{"method":"initialized"}\n')
+        process.stdin.flush()
+        result = codex_rpc(process, {"method": "account/rateLimits/read", "id": 2}) or {}
+        limits = result.get("rateLimits")
+        return {
+            "available": isinstance(limits, dict),
+            "current": quota(limits, "primary", None),
+            "weekly": quota(limits, "secondary", None),
+        }
+    except (BrokenPipeError, OSError, subprocess.SubprocessError):
+        return {"available": False, "current": blank_quota(), "weekly": blank_quota()}
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
+def select_claude_window(candidates: Any, minutes: int, captured_at: float) -> dict[str, Any] | None:
+    valid = []
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        reset = as_float(raw.get("resets_at"))
+        used = percent(raw.get("used_percent", raw.get("used_percentage")))
+        if reset is not None and used is not None and captured_at < reset <= captured_at + minutes * 60 + 300:
+            valid.append((reset, used, raw))
+    return max(valid, default=(None, None, None), key=lambda item: item[:2])[2]
+
+
+def claude(history: dict[str, Any]) -> dict[str, Any]:
     cached = read_json(CLAUDE_CACHE) or {}
     limits = cached.get("rate_limits")
+    limits = dict(limits) if isinstance(limits, dict) else {}
+    samples = history.get("claude") if isinstance(history.get("claude"), list) else []
+    captured_at = now().timestamp()
+    for name, key, minutes in (("five_hour", "current", 300), ("seven_day", "weekly", 10080)):
+        historical = ({"resets_at": item.get(f"{key}_reset"), "used_percentage": item.get(f"{key}_used")} for item in samples if isinstance(item, dict))
+        limits[name] = select_claude_window([limits.get(name), *historical], minutes, captured_at)
     return {
-        "available": isinstance(limits, dict),
+        "available": any(isinstance(limits.get(name), dict) for name in ("five_hour", "seven_day")),
         "current": quota(limits, "five_hour", parse_time(cached.get("_captured_at"))),
         "weekly": quota(limits, "seven_day", parse_time(cached.get("_captured_at"))),
     }
@@ -745,9 +742,10 @@ def token_stats() -> dict[str, Any]:
     }
 
 
-def snapshot(days: int) -> int:
-    data = {"codex": codex(days), "claude": claude(), "kimi": kimi(), "tokens": token_stats()}
-    history = append_history(read_json(HISTORY_CACHE) or {}, data)
+def snapshot() -> int:
+    history = read_json(HISTORY_CACHE) or {}
+    data = {"codex": codex(), "claude": claude(history), "kimi": kimi(), "tokens": token_stats()}
+    history = append_history(history, data)
     apply_history(data, history)
     save_history(history)
     print(json.dumps(data, separators=(",", ":")))
@@ -759,11 +757,28 @@ def capture_claude_statusline() -> int:
         data = json.loads(sys.stdin.read())
     except json.JSONDecodeError:
         return 0
-    data["_captured_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    captured = dt.datetime.now(dt.timezone.utc)
+    data["_captured_at"] = captured.isoformat(timespec="seconds").replace("+00:00", "Z")
     CACHE.mkdir(parents=True, exist_ok=True)
-    tmp = CLAUDE_CACHE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(CLAUDE_CACHE)
+    with (CACHE / "claude-statusline.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = read_json(CLAUDE_CACHE) or {}
+        old_limits = previous.get("rate_limits")
+        new_limits = data.get("rate_limits")
+        old_limits = old_limits if isinstance(old_limits, dict) else {}
+        new_limits = new_limits if isinstance(new_limits, dict) else {}
+        merged = {**old_limits, **new_limits}
+        for name, minutes in (("five_hour", 300), ("seven_day", 10080)):
+            selected = select_claude_window((old_limits.get(name), new_limits.get(name)), minutes, captured.timestamp())
+            if selected:
+                merged[name] = selected
+            else:
+                merged.pop(name, None)
+        data["rate_limits"] = merged
+        tmp = CLAUDE_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(CLAUDE_CACHE)
     model = (data.get("model") or {}).get("display_name") or (data.get("model") or {}).get("id") or "Claude"
     limits = data.get("rate_limits") or {}
     print(f"{model} | 5h used {(limits.get('five_hour') or {}).get('used_percentage', '--')}% | 7d used {(limits.get('seven_day') or {}).get('used_percentage', '--')}%")
@@ -772,11 +787,10 @@ def capture_claude_statusline() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--days-scan", type=int, default=14)
     parser.add_argument("--capture-claude-statusline", action="store_true")
     parser.add_argument("--stamp", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    return capture_claude_statusline() if args.capture_claude_statusline else snapshot(args.days_scan)
+    return capture_claude_statusline() if args.capture_claude_statusline else snapshot()
 
 
 if __name__ == "__main__":
