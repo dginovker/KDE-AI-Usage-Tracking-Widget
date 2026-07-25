@@ -34,6 +34,8 @@ FULL_USED = 99.5
 HISTORY_LIMIT = 300
 MIN_CURRENT_DELTA = 4.0
 OPENAI_PRICES = {
+    "gpt-5.6-sol": {"input": 5.0, "cached": 0.5, "output": 30.0},
+    "gpt-5.6-terra": {"input": 2.5, "cached": 0.25, "output": 15.0},
     "gpt-5-codex": {"input": 1.25, "cached": 0.125, "output": 10.0},
     "gpt-5.5": {"input": 10.0, "cached": 1.0, "output": 45.0},
     "gpt-5.4-mini": {"input": 0.75, "cached": 0.075, "output": 4.5},
@@ -41,6 +43,7 @@ OPENAI_PRICES = {
 }
 CLAUDE_PRICES = {
     "claude-fable-5": {"input": 10.0, "write5": 12.5, "write1h": 20.0, "read": 1.0, "output": 50.0},
+    "claude-opus-5": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
     "claude-opus-4-8": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
     "claude-opus-4-7": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
     "claude-opus-4-6": {"input": 5.0, "write5": 6.25, "write1h": 10.0, "read": 0.5, "output": 25.0},
