@@ -63,6 +63,7 @@ KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
 KIMI_AUTH_HOST = "https://auth.kimi.com"
 CODEX_RESET_FORECAST_URL = "https://codex-reset.com/api/forecast"
+CODEX_RESET_TIMELINE_URL = "https://codex-reset.com/api/timeline?group=reset"
 
 
 def now() -> dt.datetime:
@@ -480,15 +481,24 @@ def short_time(value: Any) -> str:
     return moment.strftime("%a %H:%M") if abs((moment.date() - ref.date()).days) < 7 else moment.strftime("%b %-d %H:%M")
 
 
-def codex_reset_forecast() -> dict[str, str]:
+def codex_reset_info() -> dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}
+    result = {}
     try:
-        payload = request_json(CODEX_RESET_FORECAST_URL, {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}, timeout=3)
+        timeline = request_json(CODEX_RESET_TIMELINE_URL, headers, timeout=3)
+        events = timeline.get("events") if isinstance(timeline.get("events"), list) else []
+        past = [short_time(item.get("announced_at")) for item in events if isinstance(item, dict)][:3]
+        if past:
+            result["past"] = " | ".join(label for label in past if label)
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return {}
-    result = {"last": short_time(payload.get("last_reset_at"))}
+        pass
+    try:
+        payload = request_json(CODEX_RESET_FORECAST_URL, headers, timeout=3)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return result
     updated = parse_time(payload.get("updated_at"))
     if updated is None or abs((now() - updated).total_seconds()) > 2 * 3600:
-        return {key: value for key, value in result.items() if value}
+        return result
     signal = payload.get("official_signal")
     if signal:
         window = signal.get("official_window", signal.get("window", {})) if isinstance(signal, dict) else {}
@@ -500,7 +510,7 @@ def codex_reset_forecast() -> dict[str, str]:
         two_days = as_float(probabilities.get("rounded_48h"))
         if day is not None and two_days is not None:
             result["next"] = f"24h ~{round(day)}%, 48h ~{round(two_days)}%"
-    return {key: value for key, value in result.items() if value}
+    return result
 
 
 def banked_resets(payload: Any) -> str:
@@ -519,7 +529,7 @@ def banked_resets(payload: Any) -> str:
 
 def codex() -> dict[str, Any]:
     binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
-    reset_info = codex_reset_forecast()
+    reset_info = codex_reset_info()
     process = None
     try:
         process = subprocess.Popen(

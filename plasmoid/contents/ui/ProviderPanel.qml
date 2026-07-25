@@ -14,6 +14,7 @@ ColumnLayout {
     Layout.fillWidth: true
     Layout.minimumWidth: 0
     Layout.preferredWidth: 1
+    Layout.alignment: Qt.AlignTop
 
     function quota(name) {
         return provider && typeof provider === "object" ? provider[name] || {} : {};
@@ -60,9 +61,10 @@ ColumnLayout {
     }
 
     PlasmaComponents3.Label {
-        visible: Boolean(root.globalResets.last)
-        text: i18n("Last reset: %1", root.globalResets.last || "")
+        visible: Boolean(root.globalResets.past)
+        text: i18n("Past: %1", root.globalResets.past || "")
         opacity: 0.72
+        wrapMode: Text.WordWrap
         Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
     }
@@ -73,7 +75,7 @@ ColumnLayout {
         opacity: 0.72
         wrapMode: Text.WordWrap
         Layout.fillWidth: true
-        Layout.topMargin: root.globalResets.last ? 0 : Kirigami.Units.largeSpacing
+        Layout.topMargin: root.globalResets.past ? 0 : Kirigami.Units.largeSpacing
     }
 
     PlasmaComponents3.Label {
@@ -82,6 +84,6 @@ ColumnLayout {
         opacity: 0.72
         wrapMode: Text.WordWrap
         Layout.fillWidth: true
-        Layout.topMargin: root.globalResets.last || root.globalResets.next ? 0 : Kirigami.Units.largeSpacing
+        Layout.topMargin: root.globalResets.past || root.globalResets.next ? 0 : Kirigami.Units.largeSpacing
     }
 }
