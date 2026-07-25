@@ -8,9 +8,12 @@ ColumnLayout {
 
     property string title: ""
     property var provider: ({})
+    readonly property var globalResets: provider && provider.global_resets ? provider.global_resets : ({})
 
     spacing: Kirigami.Units.smallSpacing
     Layout.fillWidth: true
+    Layout.minimumWidth: 0
+    Layout.preferredWidth: 1
 
     function quota(name) {
         return provider && typeof provider === "object" ? provider[name] || {} : {};
@@ -54,5 +57,31 @@ ColumnLayout {
             quota: root.quota(modelData)
             Layout.fillWidth: true
         }
+    }
+
+    PlasmaComponents3.Label {
+        visible: Boolean(root.globalResets.last)
+        text: i18n("Last reset: %1", root.globalResets.last || "")
+        opacity: 0.72
+        Layout.fillWidth: true
+        Layout.topMargin: Kirigami.Units.largeSpacing
+    }
+
+    PlasmaComponents3.Label {
+        visible: Boolean(root.globalResets.next)
+        text: i18n("Next odds: %1", root.globalResets.next || "")
+        opacity: 0.72
+        wrapMode: Text.WordWrap
+        Layout.fillWidth: true
+        Layout.topMargin: root.globalResets.last ? 0 : Kirigami.Units.largeSpacing
+    }
+
+    PlasmaComponents3.Label {
+        visible: Boolean(root.globalResets.banked)
+        text: i18n("Banked: %1", root.globalResets.banked || "")
+        opacity: 0.72
+        wrapMode: Text.WordWrap
+        Layout.fillWidth: true
+        Layout.topMargin: root.globalResets.last || root.globalResets.next ? 0 : Kirigami.Units.largeSpacing
     }
 }

@@ -62,6 +62,7 @@ KIMI_PRICES = {
 KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
 KIMI_AUTH_HOST = "https://auth.kimi.com"
+CODEX_RESET_FORECAST_URL = "https://codex-reset.com/api/forecast"
 
 
 def now() -> dt.datetime:
@@ -229,9 +230,9 @@ def kimi_device_headers(home: Path) -> dict[str, str]:
     return headers
 
 
-def request_json(url: str, headers: dict[str, str], body: bytes | None = None) -> dict[str, Any]:
+def request_json(url: str, headers: dict[str, str], body: bytes | None = None, timeout: float = 8) -> dict[str, Any]:
     req = urllib.request.Request(url, data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=8) as response:
+    with urllib.request.urlopen(req, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
     return payload if isinstance(payload, dict) else {}
 
@@ -455,8 +456,70 @@ def codex_rpc(process: subprocess.Popen, request: dict[str, Any], timeout: float
     return None
 
 
+def codex_window(limits: dict[str, Any] | None, minutes: int) -> dict[str, Any]:
+    payload = next((window for window in (limits or {}).values()
+                    if isinstance(window, dict) and round(as_float(window.get("windowDurationMins", window.get("window_minutes"))) or 0) == minutes), None)
+    return quota({"window": payload}, "window", None)
+
+
+def short_time(value: Any) -> str:
+    stamp = as_float(value)
+    try:
+        moment = dt.datetime.fromtimestamp(stamp, dt.timezone.utc).astimezone() if stamp is not None else parse_time(value if isinstance(value, str) else None)
+    except (OSError, OverflowError, ValueError):
+        moment = None
+    if moment is None:
+        return ""
+    ref = now()
+    if moment.date() == ref.date():
+        return "today " + moment.strftime("%H:%M")
+    if moment.date() == (ref + dt.timedelta(days=1)).date():
+        return "tomorrow " + moment.strftime("%H:%M")
+    if moment.date() == (ref - dt.timedelta(days=1)).date():
+        return "yesterday " + moment.strftime("%H:%M")
+    return moment.strftime("%a %H:%M") if abs((moment.date() - ref.date()).days) < 7 else moment.strftime("%b %-d %H:%M")
+
+
+def codex_reset_forecast() -> dict[str, str]:
+    try:
+        payload = request_json(CODEX_RESET_FORECAST_URL, {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}, timeout=3)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return {}
+    result = {"last": short_time(payload.get("last_reset_at"))}
+    updated = parse_time(payload.get("updated_at"))
+    if updated is None or abs((now() - updated).total_seconds()) > 2 * 3600:
+        return {key: value for key, value in result.items() if value}
+    signal = payload.get("official_signal")
+    if signal:
+        window = signal.get("official_window", signal.get("window", {})) if isinstance(signal, dict) else {}
+        label = window.get("label") if isinstance(window, dict) else None
+        result["next"] = str(label).capitalize() + " (announced)" if label else "Announced"
+    else:
+        probabilities = payload.get("probabilities") or {}
+        day = as_float(probabilities.get("rounded_24h"))
+        two_days = as_float(probabilities.get("rounded_48h"))
+        if day is not None and two_days is not None:
+            result["next"] = f"24h ~{round(day)}%, 48h ~{round(two_days)}%"
+    return {key: value for key, value in result.items() if value}
+
+
+def banked_resets(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    credits = payload.get("credits") if isinstance(payload.get("credits"), list) else []
+    available = [item for item in credits if isinstance(item, dict) and item.get("status") == "available"]
+    count_value = as_float(payload.get("availableCount"))
+    count = int(count_value) if count_value is not None else len(available)
+    expiries = sorted(stamp for item in available if (stamp := as_float(item.get("expiresAt"))) is not None and stamp > now().timestamp())
+    if not expiries:
+        return str(count)
+    prefix = "expires" if count == 1 else "next expiry"
+    return f"{count} | {prefix} {short_time(expiries[0])}"
+
+
 def codex() -> dict[str, Any]:
     binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+    reset_info = codex_reset_forecast()
     process = None
     try:
         process = subprocess.Popen(
@@ -468,18 +531,22 @@ def codex() -> dict[str, Any]:
             "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}},
         })
         if initialized is None or process.stdin is None:
-            return {"available": False, "current": blank_quota(), "weekly": blank_quota()}
+            return {"available": False, "current": blank_quota(), "weekly": blank_quota(), "global_resets": reset_info}
         process.stdin.write('{"method":"initialized"}\n')
         process.stdin.flush()
         result = codex_rpc(process, {"method": "account/rateLimits/read", "id": 2}) or {}
         limits = result.get("rateLimits")
+        banked = banked_resets(result.get("rateLimitResetCredits"))
+        if banked:
+            reset_info["banked"] = banked
         return {
             "available": isinstance(limits, dict),
-            "current": quota(limits, "primary", None),
-            "weekly": quota(limits, "secondary", None),
+            "current": codex_window(limits, 300),
+            "weekly": codex_window(limits, 10080),
+            "global_resets": reset_info,
         }
     except (BrokenPipeError, OSError, subprocess.SubprocessError):
-        return {"available": False, "current": blank_quota(), "weekly": blank_quota()}
+        return {"available": False, "current": blank_quota(), "weekly": blank_quota(), "global_resets": reset_info}
     finally:
         if process is not None and process.poll() is None:
             process.terminate()

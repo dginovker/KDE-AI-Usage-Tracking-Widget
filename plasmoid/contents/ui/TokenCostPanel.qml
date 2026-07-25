@@ -15,6 +15,8 @@ ColumnLayout {
 
     spacing: Kirigami.Units.smallSpacing / 2
     Layout.fillWidth: true
+    Layout.minimumWidth: 0
+    Layout.preferredWidth: 1
 
     PlasmaComponents3.Label {
         text: root.providerTotals.tokens || "--"
