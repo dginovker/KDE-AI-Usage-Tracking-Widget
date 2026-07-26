@@ -6,268 +6,133 @@ import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.plasma.plasmoid
-
 PlasmoidItem {
     id: root
-
     readonly property int refreshMs: 10 * 60 * 1000
-    readonly property string helperPath: fileUrlToPath(Qt.resolvedUrl("../code/widget_snapshot.py"))
-    readonly property var providerCatalog: [{"key": "claude", "label": i18n("Claude")}, {"key": "codex", "label": i18n("Codex")}, {"key": "kimi", "label": i18n("Kimi")}]
+    readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_snapshot.py").toString().replace("file://", ""))
     readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi)
-    readonly property var apiWindows: [{"key": "24h", "label": "24h"}, {"key": "7d", "label": "7d"}, {"key": "30d", "label": "30d"}, {"key": "lifetime", "label": "All"}]
-    property string apiWindow: "30d"
-    property string activeSource: ""
-    property var snapshot: ({})
-    property bool loading: false
-    property string lastError: ""
-
-    Plasmoid.title: i18n("AI Usage Rings")
-    Plasmoid.icon: "utilities-system-monitor"
-    Plasmoid.status: PlasmaCore.Types.ActiveStatus
-    Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
-
+    readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
+    property string apiWindow: "30d"; property string activeSource: ""
+    property var snapshot: ({}); property bool loading: false; property string lastError: ""
+    Plasmoid.title: i18n("AI Usage Rings"); Plasmoid.icon: "utilities-system-monitor"
+    Plasmoid.status: PlasmaCore.Types.ActiveStatus; Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
     toolTipMainText: i18n("AI Usage")
-
     compactRepresentation: Item {
         id: compact
-
         Layout.minimumWidth: Kirigami.Units.iconSizes.medium * root.providers.length + Kirigami.Units.smallSpacing * Math.max(0, root.providers.length - 1)
         Layout.minimumHeight: Kirigami.Units.iconSizes.medium
-        Layout.preferredWidth: Layout.minimumWidth
-        Layout.preferredHeight: Kirigami.Units.iconSizes.medium
-
+        Layout.preferredWidth: Layout.minimumWidth; Layout.preferredHeight: Layout.minimumHeight
         RowLayout {
-            anchors.centerIn: parent
-            spacing: Kirigami.Units.smallSpacing
-
+            anchors.centerIn: parent; spacing: Kirigami.Units.smallSpacing
             Repeater {
                 model: root.providers
-
                 RingGauge {
-                    Layout.preferredWidth: Math.max(16, compact.height - 2)
-                    Layout.preferredHeight: Layout.preferredWidth
-                    percent: root.used(modelData, "weekly")
-                    innerPercent: root.used(modelData, "current")
+                    Layout.preferredWidth: Math.max(16, compact.height - 2); Layout.preferredHeight: Layout.preferredWidth
+                    percent: root.used(modelData, "weekly"); innerPercent: root.used(modelData, "current")
                     centerText: root.quota(modelData, "weekly").days || "?"
                     accentColor: root.quota(modelData, "weekly").color || ""
                     innerAccentColor: root.quota(modelData, "current").color || ""
                 }
             }
         }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: {
-                root.refreshData();
-                root.expanded = !root.expanded;
-            }
-        }
+        MouseArea { anchors.fill: parent; onClicked: { root.refreshData(); root.expanded = !root.expanded; } }
     }
-
     fullRepresentation: PlasmaExtras.Representation {
         Layout.minimumWidth: Kirigami.Units.gridUnit * Math.max(34, root.providers.length * 17)
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 21
-        collapseMarginsHint: true
-
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 21; collapseMarginsHint: true
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: Kirigami.Units.largeSpacing
-            spacing: Kirigami.Units.smallSpacing
-
-            PlasmaComponents3.Label {
-                text: i18n("AI Usage")
-                font.bold: true
-                Layout.fillWidth: true
-            }
-
+            anchors.fill: parent; anchors.margins: Kirigami.Units.largeSpacing; spacing: Kirigami.Units.smallSpacing
+            PlasmaComponents3.Label { text: i18n("AI Usage"); font.bold: true; Layout.fillWidth: true }
             GridLayout {
-                columns: root.providers.length
-                columnSpacing: Kirigami.Units.largeSpacing
-                rowSpacing: Kirigami.Units.largeSpacing
-                Layout.fillWidth: true
-
+                columns: root.providers.length; columnSpacing: Kirigami.Units.largeSpacing
+                rowSpacing: Kirigami.Units.largeSpacing; Layout.fillWidth: true
                 Repeater {
                     model: root.providers
-
-                    ProviderPanel {
-                        title: root.providerLabel(modelData)
-                        provider: root.provider(modelData)
-                    }
+                    ProviderPanel { title: root.providerLabel(modelData); provider: root.provider(modelData) }
                 }
-
                 RowLayout {
-                    Layout.columnSpan: root.providers.length
-                    Layout.fillWidth: true
-                    Layout.topMargin: Kirigami.Units.largeSpacing
-                    spacing: Kirigami.Units.smallSpacing
-
-                    PlasmaComponents3.Label {
-                        text: i18n("API cost")
-                        font.bold: true
-                    }
-
+                    Layout.columnSpan: root.providers.length; Layout.fillWidth: true
+                    Layout.topMargin: Kirigami.Units.largeSpacing; spacing: Kirigami.Units.smallSpacing
+                    PlasmaComponents3.Label { text: i18n("API cost"); font.bold: true }
                     Repeater {
                         model: root.apiWindows
-
                         Rectangle {
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 2.4
-                            Layout.preferredHeight: Kirigami.Units.gridUnit * 1.35
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 2.4; Layout.preferredHeight: Kirigami.Units.gridUnit * 1.35
                             radius: Kirigami.Units.cornerRadius
-                            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, root.apiWindow === modelData.key ? 0.16 : 0.08)
-                            border.width: root.apiWindow === modelData.key ? 1 : 0
-                            border.color: "#3daee9"
-
+                            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, root.apiWindow === modelData ? 0.16 : 0.08)
+                            border.width: root.apiWindow === modelData ? 1 : 0; border.color: "#3daee9"
                             PlasmaComponents3.Label {
-                                anchors.centerIn: parent
-                                text: modelData.label
-                                color: Kirigami.Theme.textColor
-                                font.bold: root.apiWindow === modelData.key
+                                anchors.centerIn: parent; text: modelData === "lifetime" ? i18n("All") : modelData
+                                font.bold: root.apiWindow === modelData
                             }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                onClicked: root.apiWindow = modelData.key
-                            }
+                            MouseArea { anchors.fill: parent; onClicked: root.apiWindow = modelData }
                         }
                     }
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
+                    Item { Layout.fillWidth: true }
                 }
-
                 Repeater {
                     model: root.providers
-
-                    TokenCostPanel {
-                        providerName: modelData
-                        windowKey: root.apiWindow
-                        tokens: root.snapshot.tokens || {}
+                    ColumnLayout {
+                        readonly property var totals: root.cost(modelData)
+                        spacing: Kirigami.Units.smallSpacing / 2; Layout.fillWidth: true
+                        Layout.minimumWidth: 0; Layout.preferredWidth: 1
+                        PlasmaComponents3.Label {
+                            text: totals.tokens || "--"; font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.25; Layout.fillWidth: true
+                        }
+                        PlasmaComponents3.Label {
+                            text: i18n("%1 API equivalent", totals.cost || "--"); opacity: 0.74; Layout.fillWidth: true
+                        }
                     }
                 }
             }
-
             PlasmaComponents3.Label {
-                visible: root.lastError.length > 0
-                text: root.lastError
-                color: "#da4453"
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
+                visible: root.lastError.length > 0; text: root.lastError; color: "#da4453"
+                wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
-
             PlasmaComponents3.Label {
                 visible: root.provider("claude").available === false
                 text: i18n("Claude usage will appear after the next Claude Code response.")
-                opacity: 0.7
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
+                opacity: 0.7; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
-
             PlasmaComponents3.Label {
-                visible: Boolean(root.snapshot.tokens && root.snapshot.tokens.note)
-                text: (root.snapshot.tokens || {}).note || ""
-                opacity: 0.68
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
+                visible: Boolean((root.snapshot.tokens || {}).note); text: (root.snapshot.tokens || {}).note || ""
+                opacity: 0.68; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
-
-            Item {
-                Layout.fillHeight: true
-            }
+            Item { Layout.fillHeight: true }
         }
     }
-
     P5Support.DataSource {
-        id: executable
-        engine: "executable"
-
+        id: executable; engine: "executable"
         onNewData: function(sourceName, data) {
-            if (sourceName !== root.activeSource) {
-                return;
-            }
-            disconnectSource(sourceName);
-            root.activeSource = "";
-            root.loading = false;
-
-            const stdout = data.stdout || data["stdout"] || "";
-            if (stdout.length === 0) {
-                root.lastError = i18n("Usage helper returned no data.");
-                return;
-            }
-
-            try {
-                root.snapshot = JSON.parse(stdout);
-                root.lastError = "";
-            } catch (error) {
-                root.lastError = i18n("Could not parse usage helper output.");
-            }
+            if (sourceName !== root.activeSource) return;
+            disconnectSource(sourceName); root.activeSource = ""; root.loading = false;
+            const output = data.stdout || data["stdout"] || "";
+            if (!output) { root.lastError = i18n("Usage helper returned no data."); return; }
+            try { root.snapshot = JSON.parse(output); root.lastError = ""; }
+            catch (error) { root.lastError = i18n("Could not parse usage helper output."); }
         }
     }
-
-    Timer {
-        interval: root.refreshMs
-        running: true
-        repeat: true
-        onTriggered: root.refreshData()
-    }
-
+    Timer { interval: root.refreshMs; running: true; repeat: true; onTriggered: root.refreshData() }
     Component.onCompleted: refreshData()
-
-    function fileUrlToPath(url) {
-        var text = url.toString();
-        if (text.indexOf("file://") === 0) {
-            return decodeURIComponent(text.substring(7));
-        }
-        return text;
-    }
-
-    function shellQuote(text) {
-        return "'" + text.replace(/'/g, "'\\''") + "'";
-    }
-
+    function quote(value) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
     function refreshData() {
-        if (loading) {
-            return;
-        }
-        activeSource = "python3 " + shellQuote(helperPath) + " --stamp " + Date.now();
-        loading = true;
-        executable.connectSource(activeSource);
+        if (loading) return;
+        activeSource = "python3 " + quote(helperPath) + " --stamp " + Date.now();
+        loading = true; executable.connectSource(activeSource);
     }
-
-    function provider(providerName) {
-        return snapshot && typeof snapshot === "object" ? snapshot[providerName] || {} : {};
+    function provider(name) { return snapshot && typeof snapshot === "object" ? snapshot[name] || {} : {}; }
+    function quota(name, key) { return provider(name)[key] || {}; }
+    function used(name, key) { return typeof quota(name, key).used === "number" ? quota(name, key).used : -1; }
+    function providerLabel(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
+    function providerList(claude, codex, kimi) {
+        const names = ["claude", "codex", "kimi"], enabled = [claude, codex, kimi], selected = [];
+        for (let index = 0; index < names.length; index++) if (enabled[index] !== false) selected.push(names[index]);
+        return selected.length ? selected : names;
     }
-
-    function providerList(showClaude, showCodex, showKimi) {
-        var selected = [];
-        if (showClaude !== false) {
-            selected.push("claude");
-        }
-        if (showCodex !== false) {
-            selected.push("codex");
-        }
-        if (showKimi !== false) {
-            selected.push("kimi");
-        }
-        return selected.length > 0 ? selected : ["claude", "codex", "kimi"];
+    function cost(name) {
+        const windows = (snapshot.tokens || {}).windows || [];
+        for (let index = 0; index < windows.length; index++)
+            if (windows[index].key === apiWindow) return (windows[index].providers || {})[name] || {};
+        return {};
     }
-
-    function providerLabel(providerName) {
-        for (var i = 0; i < providerCatalog.length; i++) {
-            if (providerCatalog[i].key === providerName) {
-                return providerCatalog[i].label;
-            }
-        }
-        return providerName;
-    }
-
-    function quota(providerName, quotaName) {
-        return provider(providerName)[quotaName] || {};
-    }
-
-    function used(providerName, quotaName) {
-        var current = quota(providerName, quotaName);
-        return typeof current.used === "number" ? current.used : -1;
-    }
-
 }
