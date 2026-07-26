@@ -106,10 +106,6 @@ PlasmoidItem {
                         font.bold: true
                     }
 
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
                     Repeater {
                         model: root.apiWindows
 
@@ -133,6 +129,10 @@ PlasmoidItem {
                                 onClicked: root.apiWindow = modelData.key
                             }
                         }
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
                     }
                 }
 
