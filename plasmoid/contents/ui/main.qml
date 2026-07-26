@@ -102,7 +102,7 @@ PlasmoidItem {
                     spacing: Kirigami.Units.smallSpacing
 
                     PlasmaComponents3.Label {
-                        text: i18n("API estimate")
+                        text: i18n("API cost")
                         font.bold: true
                     }
 
