@@ -27,6 +27,11 @@ KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code":
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
+def notice(provider, reason): return f"{now():%H:%M} - {provider}: {reason}"
+def failure(provider, value):
+    code, text = getattr(value, "code", None), str(value).lower()
+    reason = "unauthorized (401)" if code == 401 or "401" in text else "forbidden (403)" if code == 403 or "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else "usage lookup failed"
+    return notice(provider, reason)
 def number(value, integer=False):
     try: return int(value or 0) if integer else float(value)
     except (TypeError, ValueError): return 0 if integer else None
@@ -196,9 +201,10 @@ def rpc(process, payload, timeout=5):
             response = json.loads(line)
         except json.JSONDecodeError: continue
         if response.get("id") == payload.get("id"):
+            if response.get("error"): raise RuntimeError(json.dumps(response["error"]))
             result = response.get("result")
             return result if isinstance(result, dict) else None
-    return None
+    raise TimeoutError
 def short_time(value):
     value, ref = moment(value), now()
     if not value: return ""
@@ -246,7 +252,7 @@ def codex():
     try:
         process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         initialized = rpc(process, {"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}})
-        if initialized is None or not process.stdin: return blank_provider({"global_resets": resets})
+        if initialized is None or not process.stdin: return blank_provider({"global_resets": resets, "error": notice("Codex", "app server unavailable")})
         process.stdin.write('{"method":"initialized"}\n')
         process.stdin.flush()
         result = rpc(process, {"method": "account/rateLimits/read", "id": 2}) or {}
@@ -254,9 +260,11 @@ def codex():
         credit = banked(result.get("rateLimitResetCredits"))
         if credit: resets["banked"] = credit
         windows = {round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0): item for item in limits.values() if isinstance(item, dict)}
-        return {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080), "global_resets": resets}
-    except (BrokenPipeError, OSError, subprocess.SubprocessError):
-        return blank_provider({"global_resets": resets})
+        data = {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080), "global_resets": resets}
+        missing = [label for minutes, label in ((300, "5h"), (10080, "weekly")) if minutes not in windows]
+        if missing: data["error"] = notice("Codex", "usage data missing" if not limits else f"{' and '.join(missing)} window missing")
+        return data
+    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc: return blank_provider({"global_resets": resets, "error": failure("Codex", exc)})
     finally:
         if process and process.poll() is None:
             process.terminate()

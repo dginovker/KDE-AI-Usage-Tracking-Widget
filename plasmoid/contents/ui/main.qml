@@ -86,10 +86,6 @@ PlasmoidItem {
                 }
             }
             PlasmaComponents3.Label {
-                visible: root.lastError.length > 0; text: root.lastError; color: "#da4453"
-                wrapMode: Text.WordWrap; Layout.fillWidth: true
-            }
-            PlasmaComponents3.Label {
                 visible: root.provider("claude").available === false
                 text: i18n("Claude usage will appear after the next Claude Code response.")
                 opacity: 0.7; wrapMode: Text.WordWrap; Layout.fillWidth: true
@@ -99,6 +95,10 @@ PlasmoidItem {
                 opacity: 0.68; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
             Item { Layout.fillHeight: true }
+            PlasmaComponents3.Label {
+                visible: text.length > 0; text: root.errors(); color: "#da4453"
+                horizontalAlignment: Text.AlignRight; wrapMode: Text.WordWrap; Layout.fillWidth: true
+            }
         }
     }
     P5Support.DataSource {
@@ -124,6 +124,11 @@ PlasmoidItem {
     function quota(name, key) { return provider(name)[key] || {}; }
     function used(name, key) { return typeof quota(name, key).used === "number" ? quota(name, key).used : -1; }
     function providerLabel(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
+    function errors() {
+        const values = lastError ? [Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError] : [];
+        for (let index = 0; index < providers.length; index++) if (provider(providers[index]).error) values.push(provider(providers[index]).error);
+        return values.join("\n");
+    }
     function providerList(claude, codex, kimi) {
         const names = ["claude", "codex", "kimi"], enabled = [claude, codex, kimi], selected = [];
         for (let index = 0; index < names.length; index++) if (enabled[index] !== false) selected.push(names[index]);
