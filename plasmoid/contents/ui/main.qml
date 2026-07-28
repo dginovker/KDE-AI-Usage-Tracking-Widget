@@ -96,7 +96,7 @@ PlasmoidItem {
             }
             Item { Layout.fillHeight: true }
             PlasmaComponents3.Label {
-                visible: text.length > 0; text: root.errors(); color: "#da4453"
+                visible: text.length > 0; text: root.errors(); color: "#fdbc4b"
                 horizontalAlignment: Text.AlignRight; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
         }
@@ -125,8 +125,8 @@ PlasmoidItem {
     function used(name, key) { return typeof quota(name, key).used === "number" ? quota(name, key).used : -1; }
     function providerLabel(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
     function errors() {
-        const values = lastError ? [Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError] : [];
-        for (let index = 0; index < providers.length; index++) if (provider(providers[index]).error) values.push(provider(providers[index]).error);
+        const values = (snapshot.errors || []).slice();
+        if (lastError) values.unshift(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
         return values.join("\n");
     }
     function providerList(claude, codex, kimi) {

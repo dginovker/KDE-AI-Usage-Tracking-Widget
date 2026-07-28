@@ -4,8 +4,7 @@ from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-CLAUDE_CACHE = CACHE / "claude-statusline.json"
-HISTORY_CACHE = CACHE / "usage-history.json"
+CLAUDE_CACHE, HISTORY_CACHE, ERROR_CACHE = (CACHE / name for name in ("claude-statusline.json", "usage-history.json", "error-history.json"))
 PROVIDERS = ("claude", "codex", "kimi")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
@@ -134,7 +133,6 @@ def blank_provider(extra=None):
     if extra:
         data.update(extra)
     return data
-
 def kimi_home(): return Path(os.environ.get("KIMI_CODE_HOME", "~/.kimi-code")).expanduser()
 def kimi_headers(home):
     version = "0.27.0"
@@ -188,7 +186,6 @@ def kimi():
     item = next((item for item in limits if window_minutes(item) == 300), None)
     current = item.get("detail") if isinstance(item, dict) and isinstance(item.get("detail"), dict) else item
     return {"available": bool(current or weekly), "current": quota(current, window_minutes(item) or 300), "weekly": quota(weekly, 10080)}
-
 def rpc(process, payload, timeout=5):
     if not process.stdin or not process.stdout: return None
     process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
@@ -261,8 +258,7 @@ def codex():
         if credit: resets["banked"] = credit
         windows = {round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0): item for item in limits.values() if isinstance(item, dict)}
         data = {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080), "global_resets": resets}
-        missing = [label for minutes, label in ((300, "5h"), (10080, "weekly")) if minutes not in windows]
-        if missing: data["error"] = notice("Codex", "usage data missing" if not limits else f"{' and '.join(missing)} window missing")
+        if 10080 not in windows: data["error"] = notice("Codex", "usage data missing" if not limits else "weekly window missing")
         return data
     except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc: return blank_provider({"global_resets": resets, "error": failure("Codex", exc)})
     finally:
@@ -271,7 +267,6 @@ def codex():
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired: process.kill()
-
 def select_claude_window(items, minutes, captured):
     valid = []
     for item in items:
@@ -326,7 +321,6 @@ def update_history(data, history):
     try:
         save(HISTORY_CACHE, history)
     except OSError: pass
-
 def jsonl(path):
     try:
         with path.open(encoding="utf-8", errors="replace") as lines:
@@ -388,7 +382,6 @@ def kimi_tokens():
             values["tokens"] = sum(values.values())
             add_tokens(windows, moment(item.get("time")), item.get("model") or "unknown", values)
     return windows
-
 def model_cost(provider, model, values):
     rates = {"codex": OPENAI_PRICES, "claude": CLAUDE_PRICES, "kimi": KIMI_PRICES}[provider].get(model)
     if not rates: return None
@@ -405,6 +398,15 @@ def compact(value):
     if value >= 1_000: return f"{value / 1_000:.1f}K"
     return str(value)
 def money(value): return f"${value:,.0f}" if value >= 100 else f"${value:,.2f}"
+def error_history(data):
+    stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
+    items = items if isinstance(items, list) else []; active = active if isinstance(active, dict) else {}
+    current = {name: data[name].get("error", "") for name in PROVIDERS}
+    for name, text in current.items():
+        if text and active.get(name) != text.split(" - ", 1)[-1]: items.append(text)
+    try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: text.split(" - ", 1)[-1] for name, text in current.items() if text}})
+    except OSError: pass
+    return list(reversed(items[-3:]))
 def token_stats():
     providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens()}
     rows, unpriced = [], set()
@@ -421,10 +423,10 @@ def token_stats():
         rows.append(row)
     note = "Unpriced models excluded from cost: " + ", ".join(sorted(unpriced)) if unpriced else ""
     return {"windows": rows, "note": note}
-
 def snapshot():
     history = load(HISTORY_CACHE)
     data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "tokens": token_stats()}
+    data["errors"] = error_history(data)
     update_history(data, history)
     print(json.dumps(data, separators=(",", ":")))
     return 0
