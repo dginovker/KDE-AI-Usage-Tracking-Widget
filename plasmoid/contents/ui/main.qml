@@ -42,7 +42,17 @@ PlasmoidItem {
         Layout.minimumHeight: Kirigami.Units.gridUnit * 21; collapseMarginsHint: true
         ColumnLayout {
             anchors.fill: parent; anchors.margins: Kirigami.Units.largeSpacing; spacing: Kirigami.Units.smallSpacing
-            PlasmaComponents3.Label { text: i18n("AI Usage"); font.bold: true; Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                PlasmaComponents3.Label { text: i18n("AI Usage"); font.bold: true; Layout.fillWidth: true }
+                PlasmaComponents3.ToolButton {
+                    id: refreshButton
+                    icon.name: "view-refresh"; enabled: !root.loading
+                    Accessible.name: i18n("Refresh usage")
+                    onClicked: root.refreshData()
+                    PlasmaComponents3.ToolTip { text: i18n("Refresh usage"); visible: refreshButton.hovered }
+                }
+            }
             GridLayout {
                 columns: root.providers.length; columnSpacing: Kirigami.Units.largeSpacing
                 rowSpacing: Kirigami.Units.largeSpacing; Layout.fillWidth: true
