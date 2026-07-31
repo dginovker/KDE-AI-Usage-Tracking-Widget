@@ -4,7 +4,7 @@ from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-CLAUDE_CACHE, HISTORY_CACHE, ERROR_CACHE = (CACHE / name for name in ("claude-statusline.json", "usage-history.json", "error-history.json"))
+CLAUDE_CACHE, HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE = (CACHE / name for name in ("claude-statusline.json", "usage-history.json", "error-history.json", "token-stats.json"))
 PROVIDERS = ("claude", "codex", "kimi")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
@@ -407,7 +407,7 @@ def error_history(data):
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: text.split(" - ", 1)[-1] for name, text in current.items() if text}})
     except OSError: pass
     return list(reversed(items[-3:]))
-def token_stats():
+def scan_token_stats():
     providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens()}
     rows, unpriced = [], set()
     for key, _ in TOKEN_WINDOWS:
@@ -423,6 +423,21 @@ def token_stats():
         rows.append(row)
     note = "Unpriced models excluded from cost: " + ", ".join(sorted(unpriced)) if unpriced else ""
     return {"windows": rows, "note": note}
+def refresh_tokens():
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with (CACHE / "token-stats.lock").open("w") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return 0
+        save(TOKEN_CACHE, scan_token_stats())
+    return 0
+def token_stats():
+    data = load(TOKEN_CACHE)
+    if isinstance(data.get("windows"), list):
+        if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
+            subprocess.Popen([sys.executable, __file__, "--refresh-tokens"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return data
+    data = scan_token_stats(); save(TOKEN_CACHE, data)
+    return data
 def snapshot():
     history = load(HISTORY_CACHE)
     data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "tokens": token_stats()}
@@ -455,4 +470,4 @@ def capture_claude():
     print(f"{model} | 5h used {(limits.get('five_hour') or {}).get('used_percentage', '--')}% | 7d used {(limits.get('seven_day') or {}).get('used_percentage', '--')}%")
     return 0
 if __name__ == "__main__":
-    raise SystemExit(capture_claude() if "--capture-claude-statusline" in sys.argv else snapshot())
+    raise SystemExit(refresh_tokens() if "--refresh-tokens" in sys.argv else capture_claude() if "--capture-claude-statusline" in sys.argv else snapshot())
