@@ -13,7 +13,7 @@ PlasmoidItem {
     readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi)
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
-    property var snapshot: ({}); property bool loading: false; property string lastError: ""
+    property var snapshot: ({}); property bool loading: false; property string lastError: ""; property string lastUpdated: ""
     Plasmoid.title: i18n("AI Usage Rings"); Plasmoid.icon: "utilities-system-monitor"
     Plasmoid.status: PlasmaCore.Types.ActiveStatus; Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
     toolTipMainText: i18n("AI Usage")
@@ -45,12 +45,22 @@ PlasmoidItem {
             RowLayout {
                 Layout.fillWidth: true
                 PlasmaComponents3.Label { text: i18n("AI Usage"); font.bold: true; Layout.fillWidth: true }
-                PlasmaComponents3.ToolButton {
-                    id: refreshButton
-                    icon.name: "view-refresh"; enabled: !root.loading
-                    Accessible.name: i18n("Refresh usage")
-                    onClicked: root.refreshData()
-                    PlasmaComponents3.ToolTip { text: i18n("Refresh usage"); visible: refreshButton.hovered }
+                Item {
+                    Layout.preferredWidth: refreshButton.implicitWidth; Layout.preferredHeight: refreshButton.implicitHeight
+                    PlasmaComponents3.ToolButton {
+                        id: refreshButton
+                        anchors.fill: parent; icon.name: "view-refresh"; enabled: !root.loading
+                        Accessible.name: root.loading ? i18n("Refreshing usage") : i18n("Refresh usage")
+                        onClicked: root.refreshData()
+                    }
+                    HoverHandler { id: refreshHover }
+                    PlasmaComponents3.ToolTip {
+                        visible: refreshHover.hovered; delay: Kirigami.Units.toolTipDelay
+                        text: root.loading ? i18n("Refreshing usage...")
+                            : root.lastError ? i18n("Refresh failed: %1. Click to retry.", root.lastError)
+                            : root.lastUpdated ? i18n("Updated %1. Click to refresh.", root.lastUpdated)
+                            : i18n("Click to refresh usage.")
+                    }
                 }
             }
             GridLayout {
@@ -118,7 +128,7 @@ PlasmoidItem {
             disconnectSource(sourceName); root.activeSource = ""; root.loading = false;
             const output = data.stdout || data["stdout"] || "";
             if (!output) { root.lastError = i18n("Usage helper returned no data."); return; }
-            try { root.snapshot = JSON.parse(output); root.lastError = ""; }
+            try { root.snapshot = JSON.parse(output); root.lastError = ""; root.lastUpdated = Qt.formatTime(new Date(), "HH:mm:ss"); }
             catch (error) { root.lastError = i18n("Could not parse usage helper output."); }
         }
     }
