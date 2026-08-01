@@ -8,7 +8,7 @@
             }
         ],
         "Category": "System Information",
-        "Description": "Compact Claude Code, Codex, and Kimi usage rings",
+        "Description": "Compact Claude Code, Codex, Kimi, and Grok usage rings",
         "EnabledByDefault": false,
         "Icon": "utilities-system-monitor",
         "Id": "local.aiusage.rings",

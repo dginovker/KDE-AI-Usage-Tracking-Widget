@@ -22,7 +22,7 @@ Item {
             const innerStroke = Math.max(3, Math.round(size * 0.12));
             const innerRadius = outerRadius - outerStroke / 2 - Math.max(1, Math.round(size * 0.04)) - innerStroke / 2;
             ctx.clearRect(0, 0, width, height); root.ring(ctx, outerRadius, outerStroke, root.percent, root.accentColor);
-            if (innerRadius > innerStroke / 2) root.ring(ctx, innerRadius, innerStroke, root.innerPercent, root.innerAccentColor);
+            if (root.innerPercent >= 0 && innerRadius > innerStroke / 2) root.ring(ctx, innerRadius, innerStroke, root.innerPercent, root.innerAccentColor);
         }
     }
     Text {

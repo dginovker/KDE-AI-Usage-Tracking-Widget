@@ -10,7 +10,7 @@ PlasmoidItem {
     id: root
     readonly property int refreshMs: 10 * 60 * 1000
     readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_snapshot.py").toString().replace("file://", ""))
-    readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi)
+    readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi, Plasmoid.configuration.showGrok)
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
     property var snapshot: ({}); property bool loading: false; property string lastError: ""; property string lastUpdated: ""
@@ -94,6 +94,7 @@ PlasmoidItem {
                     model: root.providers
                     ColumnLayout {
                         readonly property var totals: root.cost(modelData)
+                        visible: Boolean(totals.tokens || totals.cost)
                         spacing: Kirigami.Units.smallSpacing / 2; Layout.fillWidth: true
                         Layout.minimumWidth: 0; Layout.preferredWidth: 1
                         PlasmaComponents3.Label {
@@ -149,8 +150,8 @@ PlasmoidItem {
         if (lastError) values.unshift(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
         return values.join("\n");
     }
-    function providerList(claude, codex, kimi) {
-        const names = ["claude", "codex", "kimi"], enabled = [claude, codex, kimi], selected = [];
+    function providerList(claude, codex, kimi, grok) {
+        const names = ["claude", "codex", "kimi", "grok"], enabled = [claude, codex, kimi, grok], selected = [];
         for (let index = 0; index < names.length; index++) if (enabled[index] !== false) selected.push(names[index]);
         return selected.length ? selected : names;
     }

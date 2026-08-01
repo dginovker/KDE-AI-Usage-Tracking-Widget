@@ -5,5 +5,6 @@
     <entry name="showClaude" type="Bool"><default>true</default></entry>
     <entry name="showCodex" type="Bool"><default>true</default></entry>
     <entry name="showKimi" type="Bool"><default>true</default></entry>
+    <entry name="showGrok" type="Bool"><default>true</default></entry>
   </group>
 </kcfg>

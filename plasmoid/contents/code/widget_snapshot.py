@@ -5,7 +5,7 @@ from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
 CLAUDE_CACHE, HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE = (CACHE / name for name in ("claude-statusline.json", "usage-history.json", "error-history.json", "token-stats.json"))
-PROVIDERS = ("claude", "codex", "kimi")
+PROVIDERS = ("claude", "codex", "kimi", "grok")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED, FULL_USED = 80.0, 99.5
@@ -24,6 +24,7 @@ CLAUDE_PRICES = {
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
+GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
 def notice(provider, reason): return f"{now():%H:%M} - {provider}: {reason}"
@@ -186,6 +187,47 @@ def kimi():
     item = next((item for item in limits if window_minutes(item) == 300), None)
     current = item.get("detail") if isinstance(item, dict) and isinstance(item.get("detail"), dict) else item
     return {"available": bool(current or weekly), "current": quota(current, window_minutes(item) or 300), "weekly": quota(weekly, 10080)}
+def grok_home(): return Path(os.environ.get("GROK_HOME", "~/.grok")).expanduser()
+def grok_credentials(auth):
+    return next(((scope, value) for scope, value in auth.items() if isinstance(value, dict) and (value.get("key") or value.get("refresh_token"))), (None, {}))
+def grok_token(home, refresh=False):
+    path = home / "auth.json"
+    auth = load(path); scope, credentials = grok_credentials(auth)
+    token, expires = credentials.get("key"), moment(credentials.get("expires_at"))
+    if not refresh and token and (not expires or (expires - now()).total_seconds() > 60): return token
+    if not scope or not credentials.get("refresh_token") or not credentials.get("oidc_client_id"): return token
+    with Path(str(path) + ".lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        auth = load(path); scope, credentials = grok_credentials(auth)
+        token, expires = credentials.get("key"), moment(credentials.get("expires_at"))
+        if not refresh and token and (not expires or (expires - now()).total_seconds() > 60): return token
+        if not scope or not credentials.get("refresh_token") or not credentials.get("oidc_client_id"): return token
+        body = parse.urlencode({"client_id": credentials["oidc_client_id"], "grant_type": "refresh_token", "refresh_token": credentials["refresh_token"]}).encode()
+        payload = http(credentials.get("oidc_issuer", "https://auth.x.ai").rstrip("/") + "/oauth2/token", {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}, body)
+        token = payload.get("access_token")
+        if not token: return None
+        credentials.update({"key": token, "refresh_token": payload.get("refresh_token", credentials["refresh_token"])})
+        if number(payload.get("expires_in")): credentials["expires_at"] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=number(payload["expires_in"]))).isoformat().replace("+00:00", "Z")
+        auth[scope] = credentials; save(path, auth, 0o600)
+    return token
+def grok():
+    home = grok_home()
+    try:
+        token = grok_token(home)
+        if not token: return blank_provider({"error": notice("Grok", "sign in required")})
+        url = os.environ.get("CLI_CHAT_PROXY_BASE_URL", GROK_BASE_URL).rstrip("/") + "/billing?format=credits"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "x-grok-client-mode": "interactive"}
+        try: payload = http(url, headers)
+        except error.HTTPError as exc:
+            if exc.code != 401 or not (token := grok_token(home, True)): raise
+            headers["Authorization"] = f"Bearer {token}"; payload = http(url, headers)
+    except NETWORK_ERRORS as exc: return blank_provider({"error": failure("Grok", exc)})
+    config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+    period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+    reset = period.get("end") or config.get("billingPeriodEnd")
+    data = {"available": bool(reset), "current": quota(), "weekly": quota({"used_percent": config.get("creditUsagePercent", 0), "resets_at": reset}, 10080)}
+    if not reset: data["error"] = notice("Grok", "usage data missing")
+    return data
 def rpc(process, payload, timeout=5):
     if not process.stdin or not process.stdout: return None
     process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
@@ -440,7 +482,7 @@ def token_stats():
     return data
 def snapshot():
     history = load(HISTORY_CACHE)
-    data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "tokens": token_stats()}
+    data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "grok": grok(), "tokens": token_stats()}
     data["errors"] = error_history(data)
     update_history(data, history)
     print(json.dumps(data, separators=(",", ":")))

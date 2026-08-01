@@ -26,7 +26,7 @@ ColumnLayout {
         horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
     }
     Repeater {
-        model: [{"key": "current", "title": i18n("5h")}, {"key": "weekly", "title": i18n("Week")}]
+        model: root.used("current") < 0 ? [{"key": "weekly", "title": i18n("Week")}] : [{"key": "current", "title": i18n("5h")}, {"key": "weekly", "title": i18n("Week")}]
         ColumnLayout {
             readonly property var quotaData: root.quota(modelData.key)
             readonly property real used: root.used(modelData.key)
