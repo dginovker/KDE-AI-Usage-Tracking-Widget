@@ -439,7 +439,7 @@ def compact(value):
     if value >= 1_000_000: return f"{value / 1_000_000:.1f}M"
     if value >= 1_000: return f"{value / 1_000:.1f}K"
     return str(value)
-def money(value): return f"${value:,.0f}" if value >= 100 else f"${value:,.2f}"
+def money(value): return f"${value:,.0f}"
 def error_history(data):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
     items = items if isinstance(items, list) else []; active = active if isinstance(active, dict) else {}
