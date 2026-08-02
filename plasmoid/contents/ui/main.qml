@@ -93,15 +93,39 @@ PlasmoidItem {
                 Repeater {
                     model: root.providers
                     ColumnLayout {
+                        id: costPanel
                         readonly property var totals: root.cost(modelData)
+                        readonly property var models: totals.models || []
+                        property bool expanded: false
                         visible: Boolean(totals.tokens || totals.cost)
                         spacing: Kirigami.Units.smallSpacing / 2; Layout.fillWidth: true
                         Layout.minimumWidth: 0; Layout.preferredWidth: 1
                         PlasmaComponents3.Label {
                             text: totals.tokens || "--"; font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.25; Layout.fillWidth: true
                         }
-                        PlasmaComponents3.Label {
-                            text: i18n("%1 API equivalent", totals.cost || "--"); opacity: 0.74; Layout.fillWidth: true
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: Kirigami.Units.smallSpacing
+                            PlasmaComponents3.Label {
+                                text: i18n("%1 API equivalent", totals.cost || "--"); opacity: 0.74
+                                Layout.fillWidth: true; elide: Text.ElideRight
+                            }
+                            PlasmaComponents3.ToolButton {
+                                visible: costPanel.models.length > 0
+                                icon.name: costPanel.expanded ? "go-up" : "go-down"
+                                Accessible.name: costPanel.expanded ? i18n("Hide model costs") : i18n("Show model costs")
+                                onClicked: costPanel.expanded = !costPanel.expanded
+                            }
+                        }
+                        Repeater {
+                            model: costPanel.expanded ? costPanel.models : []
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: Kirigami.Units.smallSpacing
+                                PlasmaComponents3.Label {
+                                    text: modelData.name; opacity: 0.68; elide: Text.ElideMiddle
+                                    Layout.fillWidth: true; Layout.minimumWidth: 0
+                                }
+                                PlasmaComponents3.Label { text: modelData.cost; opacity: 0.8 }
+                            }
                         }
                     }
                 }

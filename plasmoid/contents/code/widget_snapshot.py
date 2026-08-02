@@ -11,7 +11,7 @@ COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED, FULL_USED = 80.0, 99.5
 NETWORK_ERRORS = (OSError, error.URLError, TimeoutError, json.JSONDecodeError)
 OPENAI_PRICES = {
-    "gpt-5.6-sol": (5.0, 0.5, 30.0), "gpt-5.6-terra": (2.5, 0.25, 15.0),
+    "gpt-5.6-sol": (5.0, 0.5, 30.0), "gpt-5.6-terra": (2.5, 0.25, 15.0), "gpt-5.6-luna": (1.0, 0.1, 6.0),
     "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0),
     "gpt-5.4-mini": (0.75, 0.075, 4.5), "gpt-5.3-codex": (1.75, 0.175, 14.0),
 }
@@ -449,19 +449,24 @@ def error_history(data):
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: text.split(" - ", 1)[-1] for name, text in current.items() if text}})
     except OSError: pass
     return list(reversed(items[-3:]))
-def scan_token_stats():
+def scan_token_usage():
     providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens()}
+    return {provider: {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS} for provider, windows in providers.items()}
+def summarize_tokens(providers):
     rows, unpriced = [], set()
     for key, _ in TOKEN_WINDOWS:
         row = {"key": key, "providers": {}}
         for provider, windows in providers.items():
-            total, cost = 0, 0.0
+            total, cost, models = 0, 0.0, []
             for model, values in windows[key].items():
                 total += values["tokens"]
                 estimate = model_cost(provider, model, values)
                 if estimate is None and values["tokens"] > 0: unpriced.add(model)
-                elif estimate is not None: cost += estimate
-            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost)}
+                elif estimate is not None:
+                    cost += estimate
+                    if values["tokens"] > 0: models.append((model, estimate))
+            models.sort(key=lambda item: (-item[1], item[0]))
+            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost), "models": [{"name": model, "cost": money(estimate)} for model, estimate in models]}
         rows.append(row)
     note = "Unpriced models excluded from cost: " + ", ".join(sorted(unpriced)) if unpriced else ""
     return {"windows": rows, "note": note}
@@ -470,16 +475,16 @@ def refresh_tokens():
     with (CACHE / "token-stats.lock").open("w") as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return 0
-        save(TOKEN_CACHE, scan_token_stats())
+        save(TOKEN_CACHE, scan_token_usage())
     return 0
 def token_stats():
     data = load(TOKEN_CACHE)
-    if isinstance(data.get("windows"), list):
+    if all(isinstance(data.get(provider), dict) for provider in ("codex", "claude", "kimi")):
         if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
             subprocess.Popen([sys.executable, __file__, "--refresh-tokens"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return data
-    data = scan_token_stats(); save(TOKEN_CACHE, data)
-    return data
+    else:
+        data = scan_token_usage(); save(TOKEN_CACHE, data)
+    return summarize_tokens(data)
 def snapshot():
     history = load(HISTORY_CACHE)
     data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "grok": grok(), "tokens": token_stats()}
