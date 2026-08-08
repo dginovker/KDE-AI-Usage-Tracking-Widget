@@ -162,7 +162,7 @@ PlasmoidItem {
     function quote(value) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
     function refreshData() {
         if (loading) return;
-        activeSource = "python3 " + quote(helperPath) + " --stamp " + Date.now();
+        activeSource = "python3 " + quote(helperPath) + " --providers=" + quote(providers.join(",")) + " --stamp " + Date.now();
         loading = true; executable.connectSource(activeSource);
     }
     function provider(name) { return snapshot && typeof snapshot === "object" ? snapshot[name] || {} : {}; }

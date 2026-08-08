@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import collections, datetime as dt, fcntl, itertools, json, math, os, select, shutil, sqlite3, subprocess, sys, time
+import collections, concurrent.futures, datetime as dt, fcntl, itertools, json, math, os, select, shutil, sqlite3, subprocess, sys, time
 from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
@@ -81,24 +81,23 @@ def reset_fields(epoch):
     return {"reset": reset.timestamp(), "reset_label": f"Resets {label}", "days": str(seconds // 86400)}
 def quota_health(used, reset, minutes):
     if used is None: return {"pace": "--", "color": ""}
-    projected = raw_projected = early = wait = None
+    projected = raw_projected = early = None
     if reset is not None and minutes:
         left = max(0.0, reset - now().timestamp())
         window = minutes * 60
         elapsed = max(0.0, 1.0 - min(1.0, left / window))
-        wait = max(0.0, (12 * 3600 if minutes >= 10080 else 1800) - window * elapsed)
         raw_projected = used if elapsed <= 0 else used / elapsed
         projected = min(100.0, raw_projected)
         if raw_projected > 100 and used > 0: early = left if used >= 100 else left - (100 - used) * window * elapsed / used
-    if wait is None or wait > 0:
-        pace = f"Forecast in {duration(wait)}" if wait is not None else "Forecast pending"
+    if raw_projected is None:
+        pace = "Forecast pending"
     elif early is not None and early > 0:
         pace = f"Limit {duration(early)} early"
     else:
         pace = f"Expected {round(projected if projected is not None else used)}%"
-    if wait == 0 and early is not None and early > 0:
+    if early is not None and early > 0:
         state = "near"
-    elif wait == 0 and raw_projected is not None:
+    elif raw_projected is not None:
         state = "ok" if raw_projected >= TARGET_USED else "near" if raw_projected >= TARGET_USED * 0.8 else "under"
     else:
         state = "ok" if used >= TARGET_USED else "near" if used >= TARGET_USED * 0.8 else "under"
@@ -255,14 +254,17 @@ def short_time(value):
 def reset_info():
     headers = {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}
     result = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        timeline = pool.submit(http, RESET_API + "timeline?group=reset", headers, None, 3)
+        prediction = pool.submit(http, RESET_API + "forecast", headers, None, 3)
     try:
-        events = http(RESET_API + "timeline?group=reset", headers, timeout=3).get("events", [])
+        events = timeline.result().get("events", [])
         events = events if isinstance(events, list) else []
         labels = [short_time(item.get("announced_at")) for item in events if isinstance(item, dict)][:3]
         if labels: result["past"] = " | ".join(filter(None, labels))
     except NETWORK_ERRORS: pass
     try:
-        forecast = http(RESET_API + "forecast", headers, timeout=3)
+        forecast = prediction.result()
         updated = moment(forecast.get("updated_at"))
         if not updated or abs((now() - updated).total_seconds()) > 7200: return result
         signal = forecast.get("official_signal")
@@ -284,31 +286,38 @@ def banked(payload):
     count = round(count) if count is not None else len(credits)
     expiries = sorted(value for item in credits if (value := number(item.get("expiresAt"))) and value > now().timestamp())
     return f"{count} | {'expires' if count == 1 else 'next expiry'} {short_time(expiries[0])}" if expiries else str(count)
-def codex():
-    resets = reset_info()
+def codex_usage():
     binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     process = None
     try:
         process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         initialized = rpc(process, {"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}})
-        if initialized is None or not process.stdin: return blank_provider({"global_resets": resets, "error": notice("Codex", "app server unavailable")})
+        if initialized is None or not process.stdin: return blank_provider({"error": notice("Codex", "app server unavailable")})
         process.stdin.write('{"method":"initialized"}\n')
         process.stdin.flush()
         result = rpc(process, {"method": "account/rateLimits/read", "id": 2}) or {}
         limits = result.get("rateLimits") if isinstance(result.get("rateLimits"), dict) else {}
         credit = banked(result.get("rateLimitResetCredits"))
-        if credit: resets["banked"] = credit
         windows = {round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0): item for item in limits.values() if isinstance(item, dict)}
-        data = {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080), "global_resets": resets}
+        data = {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080)}
+        if credit: data["_banked"] = credit
         if 10080 not in windows: data["error"] = notice("Codex", "usage data missing" if not limits else "weekly window missing")
         return data
-    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc: return blank_provider({"global_resets": resets, "error": failure("Codex", exc)})
+    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc: return blank_provider({"error": failure("Codex", exc)})
     finally:
         if process and process.poll() is None:
             process.terminate()
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired: process.kill()
+def codex():
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        usage, resets = pool.submit(codex_usage), pool.submit(reset_info)
+        data, resets = usage.result(), resets.result()
+    credit = data.pop("_banked", "")
+    if credit: resets["banked"] = credit
+    data["global_resets"] = resets
+    return data
 def select_claude_window(items, minutes, captured):
     valid = []
     for item in items:
@@ -343,6 +352,7 @@ def conversion_ratio(items):
     return median(ratios[-20:]) if ratios else None
 def update_history(data, history):
     for name in PROVIDERS:
+        if name not in data: continue
         provider = data[name]
         values = {
             "current_used": number(provider["current"].get("used")), "current_reset": number(provider["current"].get("reset")),
@@ -443,7 +453,7 @@ def money(value): return f"${value:,.0f}"
 def error_history(data):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
     items = items if isinstance(items, list) else []; active = active if isinstance(active, dict) else {}
-    current = {name: data[name].get("error", "") for name in PROVIDERS}
+    current = {name: data[name].get("error", "") for name in PROVIDERS if name in data}
     for name, text in current.items():
         if text and active.get(name) != text.split(" - ", 1)[-1]: items.append(text)
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: text.split(" - ", 1)[-1] for name, text in current.items() if text}})
@@ -485,9 +495,18 @@ def token_stats():
     else:
         data = scan_token_usage(); save(TOKEN_CACHE, data)
     return summarize_tokens(data)
+def selected_providers():
+    value = next((arg.partition("=")[2] for arg in sys.argv if arg.startswith("--providers=")), "")
+    selected = tuple(name for name in value.split(",") if name in PROVIDERS)
+    return selected or PROVIDERS
 def snapshot():
     history = load(HISTORY_CACHE)
-    data = {"claude": claude(history), "codex": codex(), "kimi": kimi(), "grok": grok(), "tokens": token_stats()}
+    jobs = {"claude": lambda: claude(history), "codex": codex, "kimi": kimi, "grok": grok}
+    selected = selected_providers()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
+        futures = {name: pool.submit(jobs[name]) for name in selected}
+        data = {name: future.result() for name, future in futures.items()}
+    data["tokens"] = token_stats()
     data["errors"] = error_history(data)
     update_history(data, history)
     print(json.dumps(data, separators=(",", ":")))
