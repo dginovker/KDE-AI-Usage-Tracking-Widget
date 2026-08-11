@@ -21,6 +21,7 @@ CLAUDE_PRICES = {
     "claude-fable-5": (10.0, 12.5, 20.0, 1.0, 50.0), "claude-sonnet-5": (2.0, 2.5, 4.0, 0.2, 10.0),
     "claude-sonnet-4-6": (3.0, 3.75, 6.0, 0.3, 15.0),
     "claude-haiku-4-5-20251001": (1.0, 1.25, 2.0, 0.1, 5.0),
+    "claude-ocx-native--gpt-5.6-sol": (5.0, 5.0, 5.0, 0.5, 30.0),
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
