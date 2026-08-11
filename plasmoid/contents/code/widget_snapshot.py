@@ -242,7 +242,7 @@ def rpc(process, payload, timeout=5):
             if response.get("error"): raise RuntimeError(json.dumps(response["error"]))
             result = response.get("result")
             return result if isinstance(result, dict) else None
-    raise TimeoutError
+    raise TimeoutError(f"{payload.get('method', 'request')} timed out after {timeout}s")
 def short_time(value):
     value, ref = moment(value), now()
     if not value: return ""
@@ -295,7 +295,7 @@ def codex_usage():
         if initialized is None or not process.stdin: return blank_provider({"error": notice("Codex", "app server unavailable")})
         process.stdin.write('{"method":"initialized"}\n')
         process.stdin.flush()
-        result = rpc(process, {"method": "account/rateLimits/read", "id": 2}) or {}
+        result = rpc(process, {"method": "account/rateLimits/read", "id": 2}, timeout=10) or {}
         limits = result.get("rateLimits") if isinstance(result.get("rateLimits"), dict) else {}
         credit = banked(result.get("rateLimitResetCredits"))
         windows = {round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0): item for item in limits.values() if isinstance(item, dict)}
@@ -303,7 +303,8 @@ def codex_usage():
         if credit: data["_banked"] = credit
         if 10080 not in windows: data["error"] = notice("Codex", "usage data missing" if not limits else "weekly window missing")
         return data
-    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc: return blank_provider({"error": failure("Codex", exc)})
+    except TimeoutError as exc: return blank_provider({"error": notice("Codex", str(exc))})
+    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError) as exc: return blank_provider({"error": failure("Codex", exc)})
     finally:
         if process and process.poll() is None:
             process.terminate()
@@ -336,11 +337,14 @@ def claude(history):
         old = ({"resets_at": item.get(f"{target}_reset"), "used_percentage": item.get(f"{target}_used")} for item in samples if isinstance(item, dict))
         limits[source] = select_claude_window([limits.get(source), *old], minutes, captured)
     captured_at = moment(cached.get("_captured_at"))
-    return {
+    data = {
         "available": any(isinstance(limits.get(key), dict) for key in ("five_hour", "seven_day")),
         "current": quota(limits.get("five_hour"), 300, captured_at),
         "weekly": quota(limits.get("seven_day"), 10080, captured_at),
     }
+    missing = [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits.get(key), dict)]
+    if missing: data["error"] = notice("Claude", f"{' and '.join(missing)} window missing from status line")
+    return data
 def conversion_ratio(items):
     ratios = []
     key = lambda item: (item.get("current_reset"), item.get("weekly_reset"))
