@@ -4,7 +4,7 @@ from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-CLAUDE_CACHE, HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE = (CACHE / name for name in ("claude-statusline.json", "usage-history.json", "error-history.json", "token-stats.json"))
+HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json"))
 PROVIDERS = ("claude", "codex", "kimi", "grok")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
@@ -25,6 +25,7 @@ CLAUDE_PRICES = {
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
+CLAUDE_CLIENT_ID, CLAUDE_API_URL, CLAUDE_TOKEN_URL = "9d1c250a-e61b-44d9-88ed-5944d1962f5e", "https://api.anthropic.com", "https://platform.claude.com/v1/oauth/token"
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
@@ -105,7 +106,7 @@ def quota_health(used, reset, minutes):
     return {"pace": pace, "color": COLORS[state]}
 def quota(raw=None, minutes=None, captured=None):
     if not isinstance(raw, dict): raw = {}
-    used = next((number(raw.get(key)) for key in ("used_percent", "used_percentage", "usedPercent") if raw.get(key) is not None), None)
+    used = next((number(raw.get(key)) for key in ("used_percent", "used_percentage", "usedPercent", "utilization") if raw.get(key) is not None), None)
     limit, absolute = number(raw.get("limit")), number(raw.get("used"))
     remaining = number(raw.get("remaining"))
     if absolute is None and limit is not None and remaining is not None: absolute = limit - remaining
@@ -320,31 +321,54 @@ def codex():
     if credit: resets["banked"] = credit
     data["global_resets"] = resets
     return data
-def select_claude_window(items, minutes, captured):
-    valid = []
-    for item in items:
-        if not isinstance(item, dict): continue
-        reset = number(item.get("resets_at"))
-        used = number(item.get("used_percent", item.get("used_percentage")))
-        if reset is not None and used is not None and captured < reset <= captured + minutes * 60 + 300: valid.append((reset, used, item))
-    return max(valid, default=(None, None, None), key=lambda value: value[:2])[2]
-def claude(history):
-    cached = load(CLAUDE_CACHE)
-    limits = cached.get("rate_limits") if isinstance(cached.get("rate_limits"), dict) else {}
-    limits = dict(limits)
-    samples, captured = history.get("claude", []), now().timestamp()
-    samples = samples if isinstance(samples, list) else []
-    for source, target, minutes in (("five_hour", "current", 300), ("seven_day", "weekly", 10080)):
-        old = ({"resets_at": item.get(f"{target}_reset"), "used_percentage": item.get(f"{target}_used")} for item in samples if isinstance(item, dict))
-        limits[source] = select_claude_window([limits.get(source), *old], minutes, captured)
-    captured_at = moment(cached.get("_captured_at"))
-    data = {
-        "available": any(isinstance(limits.get(key), dict) for key in ("five_hour", "seven_day")),
-        "current": quota(limits.get("five_hour"), 300, captured_at),
-        "weekly": quota(limits.get("seven_day"), 10080, captured_at),
-    }
-    missing = [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits.get(key), dict)]
-    if missing: data["error"] = notice("Claude", f"{' and '.join(missing)} window missing from status line")
+def claude_home(): return Path(os.environ.get("CLAUDE_CONFIG_DIR", os.environ.get("CLAUDE_HOME", "~/.claude"))).expanduser()
+def claude_token(home, failed_token=None):
+    path = home / ".credentials.json"
+    if not path.exists(): raise RuntimeError("sign in required")
+    with Path(str(path) + ".lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stored = load(path); credentials = stored.get("claudeAiOauth")
+        if not isinstance(credentials, dict): raise RuntimeError("sign in required")
+        token, expires = credentials.get("accessToken"), number(credentials.get("expiresAt"))
+        if expires and expires < 10**12: expires *= 1000
+        if token and token != failed_token and expires and expires - time.time() * 1000 > 300000: return token
+        refresh_token, scopes = credentials.get("refreshToken"), credentials.get("scopes")
+        if not refresh_token: raise RuntimeError("OAuth refresh token missing")
+        if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes): raise RuntimeError("OAuth scopes missing")
+        body = json.dumps({"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": CLAUDE_CLIENT_ID, "scope": " ".join(scopes)}).encode()
+        payload = http(CLAUDE_TOKEN_URL, {"Accept": "application/json", "Content-Type": "application/json"}, body, 30)
+        token, expires_in = payload.get("access_token"), number(payload.get("expires_in"))
+        if not token or not expires_in: raise RuntimeError("OAuth refresh returned incomplete credentials")
+        current = load(path); current_credentials = current.get("claudeAiOauth")
+        if not isinstance(current_credentials, dict): raise RuntimeError("credentials changed during refresh")
+        if current_credentials.get("refreshToken") != refresh_token:
+            if current_credentials.get("accessToken"): return current_credentials["accessToken"]
+            raise RuntimeError("credentials changed during refresh")
+        credentials = current_credentials
+        credentials.update(accessToken=token, refreshToken=payload.get("refresh_token", refresh_token), expiresAt=int(time.time() * 1000 + expires_in * 1000))
+        refresh_expires = number(payload.get("refresh_token_expires_in"))
+        if refresh_expires: credentials["refreshTokenExpiresAt"] = int(time.time() * 1000 + refresh_expires * 1000)
+        if isinstance(payload.get("scope"), str): credentials["scopes"] = payload["scope"].split()
+        current["claudeAiOauth"] = credentials; save(path, current, 0o600)
+        return token
+def claude():
+    home = claude_home()
+    try:
+        token = claude_token(home)
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "KDE-AI-Usage-Widget/1"}
+        try: payload = http(CLAUDE_API_URL + "/api/oauth/usage", headers, timeout=5)
+        except error.HTTPError as exc:
+            if exc.code != 401: raise
+            headers["Authorization"] = f"Bearer {claude_token(home, token)}"
+            payload = http(CLAUDE_API_URL + "/api/oauth/usage", headers, timeout=5)
+    except RuntimeError as exc: return blank_provider({"error": notice("Claude", str(exc))})
+    except NETWORK_ERRORS as exc: return blank_provider({"error": failure("Claude", exc)})
+    limits = {key: payload.get(key) for key in ("five_hour", "seven_day")}
+    data = {"available": any(isinstance(value, dict) for value in limits.values()), "current": quota(limits["five_hour"], 300), "weekly": quota(limits["seven_day"], 10080)}
+    missing = [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits[key], dict)]
+    if missing: data["error"] = notice("Claude", f"{' and '.join(missing)} window missing")
+    account = load(Path.home() / ".claude.json").get("oauthAccount")
+    if isinstance(account, dict) and account.get("accountUuid"): data["_account"] = account["accountUuid"]
     return data
 def conversion_ratio(items):
     ratios = []
@@ -359,11 +383,14 @@ def update_history(data, history):
     for name in PROVIDERS:
         if name not in data: continue
         provider = data[name]
+        account = provider.pop("_account", None)
+        items = history.get(name) if isinstance(history.get(name), list) else []
+        if account and history.get(f"{name}_account") != account:
+            items = []; history[name] = items; history[f"{name}_account"] = account
         values = {
             "current_used": number(provider["current"].get("used")), "current_reset": number(provider["current"].get("reset")),
             "weekly_used": number(provider["weekly"].get("used")), "weekly_reset": number(provider["weekly"].get("reset")),
         }
-        items = history.get(name) if isinstance(history.get(name), list) else []
         if all(value is not None for value in values.values()) and (not items or values != items[-1]):
             items = (items + [values])[-300:]
             history[name] = items
@@ -524,7 +551,7 @@ def selected_providers():
     return selected or PROVIDERS
 def snapshot():
     history = load(HISTORY_CACHE)
-    jobs = {"claude": lambda: claude(history), "codex": codex, "kimi": kimi, "grok": grok}
+    jobs = {"claude": claude, "codex": codex, "kimi": kimi, "grok": grok}
     selected = selected_providers()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
         futures = {name: pool.submit(jobs[name]) for name in selected}
@@ -538,22 +565,6 @@ def capture_claude():
     try:
         data = json.loads(sys.stdin.read())
     except json.JSONDecodeError: return 0
-    captured = dt.datetime.now(dt.timezone.utc)
-    data["_captured_at"] = captured.isoformat(timespec="seconds").replace("+00:00", "Z")
-    CACHE.mkdir(parents=True, exist_ok=True)
-    with (CACHE / "claude-statusline.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        old = load(CLAUDE_CACHE).get("rate_limits", {})
-        new = data.get("rate_limits", {})
-        old = old if isinstance(old, dict) else {}
-        new = new if isinstance(new, dict) else {}
-        merged = {**old, **new}
-        for name, minutes in (("five_hour", 300), ("seven_day", 10080)):
-            selected = select_claude_window((old.get(name), new.get(name)), minutes, captured.timestamp())
-            if selected: merged[name] = selected
-            else: merged.pop(name, None)
-        data["rate_limits"] = merged
-        save(CLAUDE_CACHE, data)
     model = (data.get("model") or {}).get("display_name") or (data.get("model") or {}).get("id") or "Claude"
     limits = data.get("rate_limits") or {}
     print(f"{model} | 5h used {(limits.get('five_hour') or {}).get('used_percentage', '--')}% | 7d used {(limits.get('seven_day') or {}).get('used_percentage', '--')}%")
