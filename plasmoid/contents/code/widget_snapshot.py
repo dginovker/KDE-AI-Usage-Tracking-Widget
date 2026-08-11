@@ -23,7 +23,6 @@ CLAUDE_PRICES = {
     "claude-haiku-4-5-20251001": (1.0, 1.25, 2.0, 0.1, 5.0),
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
-GROK_PRICES = dict.fromkeys(("grok-4.5", "grok-4.5-latest", "grok-build-latest"), ((2.0, 0.3, 6.0), (4.0, 0.6, 12.0)))
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 RESET_API = "https://codex-reset.com/api/"
@@ -440,23 +439,19 @@ def kimi_tokens():
             add_tokens(windows, moment(item.get("time")), item.get("model") or "unknown", values)
     return windows
 def grok_tokens():
-    windows, models = token_windows(), {}
-    for path in sorted((grok_home() / "logs").glob("unified*.jsonl")):
+    windows, seen = token_windows(), set()
+    for path in (grok_home() / "sessions").rglob("updates.jsonl"):
         for item in jsonl(path):
-            context, session = item.get("ctx") or {}, item.get("sid")
-            model = context.get("new_model") or context.get("model")
-            if session and isinstance(model, str): models[session] = model
-            if "prompt_tokens" not in context: continue
-            model = models.get(session, "unknown")
-            prompt = number(context.get("prompt_tokens"), True)
-            cached = number(context.get("cached_prompt_tokens"), True)
-            output = number(context.get("completion_tokens"), True)
-            values = {"input": prompt, "cached": cached, "output": output, "tokens": prompt + output}
-            rates = GROK_PRICES.get(model)
-            if rates:
-                rate = rates[prompt >= 200_000]
-                values["cost"] = ((prompt - cached) * rate[0] + cached * rate[1] + output * rate[2]) / 1_000_000
-            add_tokens(windows, moment(item.get("ts")), model, values)
+            params = item.get("params") or {}; usage = (params.get("update") or {}).get("usage")
+            if not isinstance(usage, dict): continue
+            meta = params["_meta"]; event = meta["eventId"]
+            if event in seen: continue
+            seen.add(event)
+            for model, raw in usage["modelUsage"].items():
+                values = {"input": int(raw["inputTokens"]), "cached": int(raw["cachedReadTokens"]), "output": int(raw["outputTokens"]), "tokens": int(raw["totalTokens"])}
+                if "costUsdTicks" in raw: values["cost"] = int(raw["costUsdTicks"]) / 10**10
+                else: values["uncosted"] = values["tokens"]
+                add_tokens(windows, moment(meta["agentTimestampMs"]), "grok-4.5" if model == "grok-4.5-build" else model, values)
     return windows
 def model_cost(provider, model, values):
     if provider == "grok": return number(values.get("cost")) if "cost" in values else None
@@ -492,16 +487,18 @@ def summarize_tokens(providers):
     for key, _ in TOKEN_WINDOWS:
         row = {"key": key, "providers": {}}
         for provider, windows in providers.items():
-            total, cost, models = 0, 0.0, []
+            total, cost, uncosted, models = 0, 0.0, 0, []
             for model, values in windows[key].items():
                 total += values["tokens"]
+                uncosted += values.get("uncosted", 0)
                 estimate = model_cost(provider, model, values)
-                if estimate is None and values["tokens"] > 0: unpriced.add(model)
+                if estimate is None and values["tokens"] > values.get("uncosted", 0): unpriced.add(model)
                 elif estimate is not None:
                     cost += estimate
-                    if values["tokens"] > 0: models.append((model, estimate))
+                    if values["tokens"] > 0: models.append((model, estimate, bool(values.get("uncosted"))))
             models.sort(key=lambda item: (-item[1], item[0]))
-            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost), "models": [{"name": model, "cost": money(estimate)} for model, estimate in models]}
+            suffix = "+" if uncosted else ""
+            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost) + suffix, "models": [{"name": model, "cost": money(estimate) + ("+" if partial else "")} for model, estimate, partial in models], "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else ""}
         rows.append(row)
     note = "Unpriced models excluded from cost: " + ", ".join(sorted(unpriced)) if unpriced else ""
     return {"windows": rows, "note": note}
