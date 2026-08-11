@@ -23,6 +23,7 @@ CLAUDE_PRICES = {
     "claude-haiku-4-5-20251001": (1.0, 1.25, 2.0, 0.1, 5.0),
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
+GROK_PRICES = dict.fromkeys(("grok-4.5", "grok-4.5-latest", "grok-build-latest"), ((2.0, 0.3, 6.0), (4.0, 0.6, 12.0)))
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 RESET_API = "https://codex-reset.com/api/"
@@ -438,7 +439,27 @@ def kimi_tokens():
             values["tokens"] = sum(values.values())
             add_tokens(windows, moment(item.get("time")), item.get("model") or "unknown", values)
     return windows
+def grok_tokens():
+    windows, models = token_windows(), {}
+    for path in sorted((grok_home() / "logs").glob("unified*.jsonl")):
+        for item in jsonl(path):
+            context, session = item.get("ctx") or {}, item.get("sid")
+            model = context.get("new_model") or context.get("model")
+            if session and isinstance(model, str): models[session] = model
+            if "prompt_tokens" not in context: continue
+            model = models.get(session, "unknown")
+            prompt = number(context.get("prompt_tokens"), True)
+            cached = number(context.get("cached_prompt_tokens"), True)
+            output = number(context.get("completion_tokens"), True)
+            values = {"input": prompt, "cached": cached, "output": output, "tokens": prompt + output}
+            rates = GROK_PRICES.get(model)
+            if rates:
+                rate = rates[prompt >= 200_000]
+                values["cost"] = ((prompt - cached) * rate[0] + cached * rate[1] + output * rate[2]) / 1_000_000
+            add_tokens(windows, moment(item.get("ts")), model, values)
+    return windows
 def model_cost(provider, model, values):
+    if provider == "grok": return number(values.get("cost")) if "cost" in values else None
     rates = {"codex": OPENAI_PRICES, "claude": CLAUDE_PRICES, "kimi": KIMI_PRICES}[provider].get(model)
     if not rates: return None
     if provider == "claude":
@@ -464,7 +485,7 @@ def error_history(data):
     except OSError: pass
     return list(reversed(items[-3:]))
 def scan_token_usage():
-    providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens()}
+    providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens(), "grok": grok_tokens()}
     return {provider: {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS} for provider, windows in providers.items()}
 def summarize_tokens(providers):
     rows, unpriced = [], set()
@@ -493,7 +514,7 @@ def refresh_tokens():
     return 0
 def token_stats():
     data = load(TOKEN_CACHE)
-    if all(isinstance(data.get(provider), dict) for provider in ("codex", "claude", "kimi")):
+    if all(isinstance(data.get(provider), dict) for provider in PROVIDERS):
         if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
             subprocess.Popen([sys.executable, __file__, "--refresh-tokens"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     else:
