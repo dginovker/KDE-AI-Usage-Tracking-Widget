@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-import collections, concurrent.futures, datetime as dt, fcntl, itertools, json, math, os, select, shutil, sqlite3, subprocess, sys, time
+import collections, concurrent.futures, datetime as dt, fcntl, itertools, json, math, os, re, select, shutil, sqlite3, subprocess, sys, tempfile, time
 from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json"))
+HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE, CODEX_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json", "codex-usage.json"))
 PROVIDERS = ("claude", "codex", "kimi", "grok")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
@@ -29,7 +29,7 @@ CLAUDE_CLIENT_ID, CLAUDE_API_URL, CLAUDE_TOKEN_URL = "9d1c250a-e61b-44d9-88ed-59
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
-def notice(provider, reason): return f"{now():%H:%M} - {provider}: {reason}"
+def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
 def failure(provider, value):
     code, text = getattr(value, "code", None), str(value).lower()
     reason = "unauthorized (401)" if code == 401 or "401" in text else "forbidden (403)" if code == 403 or "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else "usage lookup failed"
@@ -288,31 +288,123 @@ def banked(payload):
     count = round(count) if count is not None else len(credits)
     expiries = sorted(value for item in credits if (value := number(item.get("expiresAt"))) and value > now().timestamp())
     return f"{count} | {'expires' if count == 1 else 'next expiry'} {short_time(expiries[0])}" if expiries else str(count)
-def codex_usage():
-    binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
-    process = None
+def codex_windows(limits):
+    values = limits.values() if isinstance(limits, dict) else limits or []
+    return {str(minutes): item for item in values if isinstance(item, dict) and (minutes := round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0))}
+def codex_attempt(binary, deadline):
+    started, process, stage, result, issue = time.monotonic(), None, "start", None, None
+    stderr = tempfile.TemporaryFile(mode="w+t")
     try:
-        process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
-        initialized = rpc(process, {"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}})
-        if initialized is None or not process.stdin: return blank_provider({"error": notice("Codex", "app server unavailable")})
-        process.stdin.write('{"method":"initialized"}\n')
-        process.stdin.flush()
-        result = rpc(process, {"method": "account/rateLimits/read", "id": 2}, timeout=10) or {}
-        limits = result.get("rateLimits") if isinstance(result.get("rateLimits"), dict) else {}
-        credit = banked(result.get("rateLimitResetCredits"))
-        windows = {round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0): item for item in limits.values() if isinstance(item, dict)}
-        data = {"available": bool(limits), "current": quota(windows.get(300), 300), "weekly": quota(windows.get(10080), 10080)}
-        if credit: data["_banked"] = credit
-        if 10080 not in windows: data["error"] = notice("Codex", "usage data missing" if not limits else "weekly window missing")
-        return data
-    except TimeoutError as exc: return blank_provider({"error": notice("Codex", str(exc))})
-    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError) as exc: return blank_provider({"error": failure("Codex", exc)})
+        process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
+        stage = "initialize"
+        left = deadline - time.monotonic()
+        if left <= 0: raise TimeoutError("lookup budget exhausted")
+        initialized = rpc(process, {"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}}, min(2, left))
+        if initialized is None or not process.stdin: raise RuntimeError("empty initialize response")
+        process.stdin.write('{"method":"initialized"}\n'); process.stdin.flush()
+        stage = "rate limits"
+        left = deadline - time.monotonic()
+        if left <= 0: raise TimeoutError("lookup budget exhausted")
+        result = rpc(process, {"method": "account/rateLimits/read", "id": 2}, min(6, left))
+        if result is None: raise RuntimeError("empty response")
+    except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc:
+        issue = {"stage": stage, "timeout": isinstance(exc, TimeoutError), "message": str(exc)}
     finally:
         if process and process.poll() is None:
             process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired: process.kill()
+            try: process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait()
+        stderr.flush(); stderr.seek(0)
+        detail = " ".join(stderr.read().split()).replace(str(Path.home()), "~")
+        detail = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", detail)
+        detail = re.sub(r"(?i)(bearer\s+|(?:access|refresh|id)[ _-]?token\s*[:=]\s*)\S+", r"\1<redacted>", detail)
+        detail = re.sub(r"(?i)([?&](?:token|key|code)=)[^&\s]+", r"\1<redacted>", detail)[-180:]
+        stderr.close()
+    if issue: issue.update(stderr=detail, elapsed_ms=round((time.monotonic() - started) * 1000))
+    return result, issue
+def codex_local_usage(home, after):
+    paths = []
+    try:
+        for path in (home / "sessions").rglob("*.jsonl"):
+            try: paths.append((path.stat().st_mtime, path))
+            except OSError: pass
+    except OSError: return after, None
+    latest, found = after, None
+    for modified, path in sorted(paths, reverse=True)[:24]:
+        if modified <= after: continue
+        try:
+            with path.open("rb") as lines:
+                lines.seek(max(0, path.stat().st_size - 1024 * 1024))
+                if lines.tell(): lines.readline()
+                for line in lines:
+                    try: item = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError): continue
+                    if not isinstance(item, dict) or not isinstance(item.get("payload"), dict): continue
+                    payload = item["payload"]; limits = payload.get("rate_limits")
+                    if item.get("type") != "event_msg" or payload.get("type") != "token_count" or not isinstance(limits, dict) or limits.get("limit_id") != "codex": continue
+                    captured = moment(item.get("timestamp")); windows = codex_windows(limits.get(key) for key in ("primary", "secondary"))
+                    if captured and latest < captured.timestamp() <= time.time() + 300 and windows:
+                        latest, found = captured.timestamp(), windows
+        except OSError: continue
+    return latest, found
+def codex_provider(windows, credits=None, stale_at=None, error_text=""):
+    windows = {number(key, True): value for key, value in (windows or {}).items() if isinstance(value, dict)}
+    current, weekly = quota(windows.get(300), 300), quota(windows.get(10080), 10080)
+    if stale_at:
+        if current.get("reset") and current["reset"] <= time.time(): current = quota()
+        if weekly.get("reset") and weekly["reset"] <= time.time(): weekly = quota()
+    data = {"available": current.get("used") is not None or weekly.get("used") is not None, "current": current, "weekly": weekly}
+    if credit := banked(credits): data["_banked"] = credit
+    if stale_at:
+        age = max(0, time.time() - stale_at)
+        data["stale"] = "Last confirmed just now" if age < 60 else f"Last confirmed {duration(age)} ago"
+    if error_text: data["error"] = error_text
+    return data
+def codex_error(issue, attempts, elapsed):
+    text = (issue.get("message", "") + " " + issue.get("stderr", "")).lower()
+    reason = f"{issue['stage']} timed out" if issue.get("timeout") else "unauthorized (401)" if "401" in text else "forbidden (403)" if "403" in text else issue.get("reason") or f"{issue['stage']} failed"
+    if attempts > 1: reason += " after retry"
+    reason += f" ({elapsed:.1f}s)"
+    if issue.get("stderr"): reason += "; " + issue["stderr"]
+    return notice("Codex", reason)
+def codex_usage():
+    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    auth = load(home / "auth.json"); tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    account, cached = tokens.get("account_id"), load(CODEX_CACHE)
+    if cached.get("account") != account: cached = {"account": account}
+    binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
+    started, issues, windows, credits = time.monotonic(), [], None, None
+    for attempt in range(2):
+        result, issue = codex_attempt(binary, min(started + 14, time.monotonic() + 7))
+        if not issue:
+            windows = codex_windows(result.get("rateLimits"))
+            weekly = quota(windows.get("10080"), 10080)
+            if weekly.get("used") is not None and weekly.get("reset") and weekly["reset"] > time.time():
+                credits = result.get("rateLimitResetCredits"); break
+            issue = {"stage": "rate limits", "reason": "weekly window missing" if windows else "usage data missing", "message": "", "stderr": "", "timeout": False, "elapsed_ms": 0}
+            windows = None
+        issues.append(issue)
+        if attempt or not (issue.get("timeout") or issue.get("reason")): break
+    elapsed = time.monotonic() - started
+    diagnostic = {"at": now().isoformat(), "ok": windows is not None, "attempts": len(issues) + (windows is not None), "elapsed_ms": round(elapsed * 1000)}
+    if windows is not None:
+        cached = {"account": account, "observed_at": time.time(), "source": "network", "windows": windows, "credits": credits, "last_attempt": diagnostic}
+        try: save(CODEX_CACHE, cached, 0o600)
+        except OSError as exc: return codex_provider(windows, credits, error_text=notice("Codex", f"cache write failed ({exc.errno})"))
+        return codex_provider(windows, credits)
+    issue = issues[-1] if issues else {"stage": "lookup", "message": "budget exhausted", "stderr": "", "timeout": True}
+    diagnostic.update(stage=issue["stage"], timeout=issue.get("timeout", False), reason=issue.get("reason", ""), message=issue.get("message", ""), stderr=issue.get("stderr", ""))
+    observed = number(cached.get("observed_at")) or 0
+    local_at, local_windows = codex_local_usage(home, observed) if observed else (0, None)
+    known_reset = quota((cached.get("windows") or {}).get("10080"), 10080).get("reset")
+    local_reset = quota((local_windows or {}).get("10080"), 10080).get("reset")
+    if local_reset and local_reset == known_reset: cached.update(observed_at=local_at, source="session", windows=local_windows)
+    cached["last_attempt"] = diagnostic
+    try: save(CODEX_CACHE, cached, 0o600)
+    except OSError as exc: issue["stderr"] = (issue.get("stderr", "") + f"; cache write failed ({exc.errno})").strip("; ")
+    error_text = codex_error(issue, len(issues), elapsed)
+    return codex_provider(cached.get("windows"), cached.get("credits"), number(cached.get("observed_at")), error_text)
 def codex():
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         usage, resets = pool.submit(codex_usage), pool.submit(reset_info)
@@ -498,13 +590,14 @@ def compact(value):
     if value >= 1_000: return f"{value / 1_000:.1f}K"
     return str(value)
 def money(value): return f"${value:,.0f}"
+def error_signature(text): return re.sub(r" \([\d.]+s\)(?:;.*)?$", "", text.split(" - ", 1)[-1])
 def error_history(data):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
     items = items if isinstance(items, list) else []; active = active if isinstance(active, dict) else {}
     current = {name: data[name].get("error", "") for name in PROVIDERS if name in data}
     for name, text in current.items():
-        if text and active.get(name) != text.split(" - ", 1)[-1]: items.append(text)
-    try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: text.split(" - ", 1)[-1] for name, text in current.items() if text}})
+        if text and active.get(name) != error_signature(text): items.append(text)
+    try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
     return list(reversed(items[-3:]))
 def scan_token_usage():
