@@ -4,8 +4,8 @@ from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE, CODEX_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json", "codex-usage.json"))
-PROVIDERS = ("claude", "codex", "kimi", "grok")
+HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE, CODEX_CACHE, AGY_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json", "codex-usage.json", "agy-usage.json"))
+PROVIDERS = ("claude", "codex", "kimi", "grok", "agy")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED, FULL_USED = 80.0, 99.5
@@ -24,9 +24,15 @@ CLAUDE_PRICES = {
     "claude-ocx-native--gpt-5.6-sol": (5.0, 5.0, 5.0, 0.5, 30.0),
 }
 KIMI_PRICES = {"kimi-code/kimi-for-coding": (0.95, 0.19, 4.0), "kimi-k2.7-code": (0.95, 0.19, 4.0), "kimi-k2.7-code-highspeed": (1.9, 0.38, 8.0)}
+AGY_PRICES = {
+    "gemini-3.7-flash": (0.75, 0.075, 3.75), "gemini-3.6-flash": (0.75, 0.075, 3.75),
+    "gemini-3.5-flash": (1.5, 0.15, 9.0), "gemini-3.1-pro": (2.0, 0.2, 12.0),
+    "gemini-3.1-pro (>200k)": (4.0, 0.4, 18.0),
+}
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
 CLAUDE_CLIENT_ID, CLAUDE_API_URL, CLAUDE_TOKEN_URL = "9d1c250a-e61b-44d9-88ed-5944d1962f5e", "https://api.anthropic.com", "https://platform.claude.com/v1/oauth/token"
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
+AGY_RPC = "/exa.language_server_pb.LanguageServerService/"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
 def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
@@ -229,6 +235,90 @@ def grok():
     data = {"available": bool(reset), "current": quota(), "weekly": quota({"used_percent": config.get("creditUsagePercent", 0), "resets_at": reset}, 10080)}
     if not reset: data["error"] = notice("Grok", "usage data missing")
     return data
+def agy_home(): return Path(os.environ.get("GEMINI_CLI_HOME", "~/.gemini/antigravity-cli")).expanduser()
+def agy_ports():
+    ports = set()
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            if (process / "comm").read_text().strip() != "agy": continue
+            sockets = set()
+            for fd in (process / "fd").iterdir():
+                try: target = os.readlink(fd)
+                except OSError: continue
+                if target.startswith("socket:["): sockets.add(target[8:-1])
+            for table in (process / "net/tcp", process / "net/tcp6"):
+                for line in table.read_text().splitlines()[1:]:
+                    columns = line.split()
+                    if columns[3] == "0A" and columns[9] in sockets: ports.add(int(columns[1].rsplit(":", 1)[1], 16))
+        except (OSError, ValueError): continue
+    return sorted(ports)
+def agy_rpc(port, method):
+    body = json.dumps({"metadata": {"ideName": "antigravity", "extensionName": "antigravity", "locale": "en"}}).encode()
+    return http(f"http://127.0.0.1:{port}{AGY_RPC}{method}", {"Content-Type": "application/json", "Connect-Protocol-Version": "1"}, body, 2)
+def agy_lookup():
+    if not (ports := agy_ports()): raise RuntimeError("not running")
+    last_error = None
+    for port in ports:
+        try:
+            summary, status = agy_rpc(port, "RetrieveUserQuotaSummary"), agy_rpc(port, "GetUserStatus")
+            groups, user = (summary.get("response") or {}).get("groups"), status.get("userStatus")
+            if not isinstance(groups, list): raise RuntimeError("quota response missing groups")
+            if not isinstance(user, dict) or not user.get("email"): raise RuntimeError("account response missing email")
+            return groups, user["email"]
+        except (OSError, error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) or not isinstance(last_error, RuntimeError): last_error = exc
+    if last_error: raise last_error
+    raise RuntimeError("local quota service unavailable")
+def agy_pool(group):
+    title = str(group.get("displayName", "")); lower = title.lower()
+    family = "gemini" if "gemini" in lower else "third_party" if "claude" in lower or "gpt" in lower else None
+    if not family: return None
+    values = {"title": "Gemini" if family == "gemini" else "Claude/GPT", "family": family}
+    for bucket in group.get("buckets", []):
+        window = str(bucket.get("window", "")).lower().replace("-", "_")
+        key = "current" if window in ("5h", "five_hour") else "weekly" if window in ("week", "weekly") else None
+        if not key: continue
+        remaining, reset = number(bucket.get("remainingFraction")), bucket.get("resetTime")
+        if remaining is None or not 0 <= remaining <= 1 or not reset: raise RuntimeError(f"{title} {window} quota is incomplete")
+        values[key] = quota({"used_percent": (1 - remaining) * 100, "resets_at": reset}, 300 if key == "current" else 10080)
+    if not any(key in values for key in ("current", "weekly")): raise RuntimeError(f"{title} has no supported quota windows")
+    return values
+def agy_provider(groups, model, account=None, stale_at=None, error_text=""):
+    pools = [pool for group in groups or [] if isinstance(group, dict) and (pool := agy_pool(group))]
+    model_name = str(model or ""); lower = model_name.lower()
+    family = "third_party" if lower.startswith(("claude", "gpt")) else "gemini" if lower.startswith("gemini") else None
+    primary = next((pool for pool in pools if pool["family"] == family), {})
+    if stale_at:
+        for pool in pools:
+            for key in ("current", "weekly"):
+                if pool.get(key, {}).get("reset") and pool[key]["reset"] <= time.time(): pool[key] = quota()
+    rows = []
+    for pool in sorted(pools, key=lambda value: value["family"] != family):
+        for key, label in (("current", "5h"), ("weekly", "Week")):
+            if pool.get(key, {}).get("used") is not None: rows.append({"title": f"{pool['title']} {label}", "data": pool[key]})
+    data = {"available": any(primary.get(key, {}).get("used") is not None for key in ("current", "weekly")), "current": primary.get("current", quota()), "weekly": primary.get("weekly", quota()), "rows": rows}
+    if account and family: data["_account"] = f"{account}:{family}"
+    if stale_at:
+        age = max(0, time.time() - stale_at)
+        data["stale"] = "Last confirmed just now" if age < 60 else f"Last confirmed {duration(age)} ago"
+    if not family: error_text = error_text or notice("Agy", "selected model missing")
+    elif not primary: error_text = error_text or notice("Agy", "selected model quota group missing")
+    if error_text: data["error"] = error_text
+    return data
+def agy():
+    home, cached = agy_home(), load(AGY_CACHE)
+    try:
+        groups, account = agy_lookup()
+        model = load(home / "settings.json").get("model")
+        if not isinstance(model, str) or not model: raise RuntimeError("selected model missing")
+        data = agy_provider(groups, model, account)
+        cached = {"account": account, "observed_at": time.time(), "groups": groups, "model": model}
+        try: save(AGY_CACHE, cached, 0o600)
+        except OSError as exc: data["error"] = notice("Agy", f"cache write failed ({exc.errno})")
+        return data
+    except (OSError, error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+        reason = str(exc) if isinstance(exc, RuntimeError) else failure("Agy", exc).split(" - ", 1)[-1]
+        return agy_provider(cached.get("groups"), cached.get("model"), cached.get("account"), number(cached.get("observed_at")), notice("Agy", reason))
 def rpc(process, payload, timeout=5):
     if not process.stdin or not process.stdout: return None
     process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
@@ -573,13 +663,66 @@ def grok_tokens():
                 else: values["uncosted"] = values["tokens"]
                 add_tokens(windows, moment(meta["agentTimestampMs"]), "grok-4.5" if model == "grok-4.5-build" else model, values)
     return windows
+def protobuf_varint(data, offset=0):
+    value = shift = 0
+    while offset < len(data):
+        byte = data[offset]; offset += 1; value |= (byte & 127) << shift
+        if byte < 128: return value, offset
+        shift += 7
+    raise ValueError("truncated protobuf varint")
+def protobuf_fields(data):
+    fields, offset = [], 0
+    while offset < len(data):
+        tag, offset = protobuf_varint(data, offset); field, wire = tag >> 3, tag & 7
+        if wire == 0: value, offset = protobuf_varint(data, offset)
+        elif wire == 1: value, offset = data[offset:offset + 8], offset + 8
+        elif wire == 2:
+            size, offset = protobuf_varint(data, offset); value, offset = data[offset:offset + size], offset + size
+        elif wire == 5: value, offset = data[offset:offset + 4], offset + 4
+        else: raise ValueError(f"unsupported protobuf wire type {wire}")
+        fields.append((field, wire, value))
+    return fields
+def protobuf_first(fields, field, wire=None):
+    return next((value for key, kind, value in fields if key == field and (wire is None or kind == wire)), None)
+def agy_tokens():
+    windows, seen = token_windows(), set()
+    for path in (agy_home() / "conversations").glob("*.db"):
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            timestamps = {}
+            for index, metadata in connection.execute("select idx, metadata from steps"):
+                stamp = protobuf_first(protobuf_fields(metadata), 1, 2)
+                if stamp: timestamps[index] = protobuf_first(protobuf_fields(stamp), 1, 0)
+            for index, data in connection.execute("select idx, data from gen_metadata"):
+                top = protobuf_fields(data); generation = protobuf_first(top, 1, 2)
+                if not generation: continue
+                generation = protobuf_fields(generation); stats = protobuf_first(generation, 4, 2)
+                if not stats: continue
+                stats = protobuf_fields(stats)
+                event = protobuf_first(stats, 7, 2) or protobuf_first(stats, 11, 2) or f"{path}:{index}".encode()
+                if event in seen: continue
+                seen.add(event)
+                model = (protobuf_first(generation, 19, 2) or b"unknown").decode(errors="replace")
+                input_tokens = protobuf_first(stats, 2, 0) or 0
+                output_tokens = protobuf_first(stats, 3, 0) or 0
+                prompt_tokens = protobuf_first(stats, 5, 0) or 0
+                if model.startswith("gemini-3.1-pro") and prompt_tokens > 200000: model = "gemini-3.1-pro (>200k)"
+                total_input = max(input_tokens, prompt_tokens)
+                values = {"input": total_input, "cached": max(0, prompt_tokens - input_tokens), "output": output_tokens, "tokens": total_input + output_tokens}
+                packed, offset, references = protobuf_first(top, 2, 2) or b"", 0, []
+                while offset < len(packed):
+                    reference, offset = protobuf_varint(packed, offset); references.append(reference)
+                add_tokens(windows, moment(max((timestamps.get(reference) or 0 for reference in references), default=0)), model, values)
+    return windows
 def model_cost(provider, model, values):
     if provider == "grok": return number(values.get("cost")) if "cost" in values else None
-    rates = {"codex": OPENAI_PRICES, "claude": CLAUDE_PRICES, "kimi": KIMI_PRICES}[provider].get(model)
+    if provider == "agy":
+        rates = AGY_PRICES.get(model)
+        if not rates and (claude_rates := CLAUDE_PRICES.get(model.removesuffix("-thinking"))): rates = (claude_rates[0], claude_rates[3], claude_rates[4])
+    else: rates = {"codex": OPENAI_PRICES, "claude": CLAUDE_PRICES, "kimi": KIMI_PRICES}[provider].get(model)
     if not rates: return None
     if provider == "claude":
         usage = (values["input"], values["write5"] + values["write_unknown"], values["write1h"], values["read"], values["output"])
-    elif provider == "codex":
+    elif provider in ("codex", "agy"):
         usage = (max(0, values["input"] - values["cached"]), values["cached"], values["output"])
     else:
         usage = (values["input"], values["cached"], values["output"])
@@ -600,8 +743,9 @@ def error_history(data):
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
     return list(reversed(items[-3:]))
-def scan_token_usage():
-    providers = {"codex": codex_tokens(), "claude": claude_tokens(), "kimi": kimi_tokens(), "grok": grok_tokens()}
+def scan_token_usage(names=PROVIDERS):
+    scanners = {"codex": codex_tokens, "claude": claude_tokens, "kimi": kimi_tokens, "grok": grok_tokens, "agy": agy_tokens}
+    providers = {provider: scanners[provider]() for provider in names}
     return {provider: {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS} for provider, windows in providers.items()}
 def summarize_tokens(providers):
     rows, unpriced = [], set()
@@ -632,11 +776,12 @@ def refresh_tokens():
     return 0
 def token_stats():
     data = load(TOKEN_CACHE)
-    if all(isinstance(data.get(provider), dict) for provider in PROVIDERS):
+    missing = [provider for provider in PROVIDERS if not isinstance(data.get(provider), dict)]
+    if not missing:
         if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
             subprocess.Popen([sys.executable, __file__, "--refresh-tokens"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     else:
-        data = scan_token_usage(); save(TOKEN_CACHE, data)
+        data.update(scan_token_usage(missing)); save(TOKEN_CACHE, data)
     return summarize_tokens(data)
 def selected_providers():
     value = next((arg.partition("=")[2] for arg in sys.argv if arg.startswith("--providers=")), "")
@@ -644,7 +789,7 @@ def selected_providers():
     return selected or PROVIDERS
 def snapshot():
     history = load(HISTORY_CACHE)
-    jobs = {"claude": claude, "codex": codex, "kimi": kimi, "grok": grok}
+    jobs = {"claude": claude, "codex": codex, "kimi": kimi, "grok": grok, "agy": agy}
     selected = selected_providers()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
         futures = {name: pool.submit(jobs[name]) for name in selected}

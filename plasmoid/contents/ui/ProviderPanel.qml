@@ -26,10 +26,10 @@ ColumnLayout {
         horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
     }
     Repeater {
-        model: root.used("current") < 0 ? [{"key": "weekly", "title": i18n("Week")}] : [{"key": "current", "title": i18n("5h")}, {"key": "weekly", "title": i18n("Week")}]
+        model: provider.rows || (root.used("current") < 0 ? [{"key": "weekly", "title": i18n("Week")}] : [{"key": "current", "title": i18n("5h")}, {"key": "weekly", "title": i18n("Week")}])
         ColumnLayout {
-            readonly property var quotaData: root.quota(modelData.key)
-            readonly property real used: root.used(modelData.key)
+            readonly property var quotaData: modelData.data || root.quota(modelData.key)
+            readonly property real used: typeof quotaData.used === "number" ? quotaData.used : -1
             spacing: Kirigami.Units.smallSpacing / 2; Layout.fillWidth: true
             RowLayout {
                 Layout.fillWidth: true
