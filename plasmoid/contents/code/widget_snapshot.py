@@ -12,13 +12,14 @@ TARGET_USED, FULL_USED = 80.0, 99.5
 NETWORK_ERRORS = (OSError, error.URLError, TimeoutError, json.JSONDecodeError)
 OPENAI_PRICES = {
     "gpt-5.6-sol": (5.0, 0.5, 30.0), "gpt-5.6-terra": (2.5, 0.25, 15.0), "gpt-5.6-luna": (1.0, 0.1, 6.0),
-    "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0),
+    "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0), "gpt-6-astra": (10.0, 1.0, 50.0),
     "gpt-5.4-mini": (0.75, 0.075, 4.5), "gpt-5.3-codex": (1.75, 0.175, 14.0),
 }
 CLAUDE_PRICES = {
     **dict.fromkeys(("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"), (5.0, 6.25, 10.0, 0.5, 25.0)),
     "claude-opus-4-1": (15.0, 18.75, 30.0, 1.5, 75.0), "claude-opus-4": (15.0, 18.75, 30.0, 1.5, 75.0),
-    "claude-fable-5": (10.0, 12.5, 20.0, 1.0, 50.0), "claude-sonnet-5": (2.0, 2.5, 4.0, 0.2, 10.0),
+    "claude-fable-5": (10.0, 12.5, 20.0, 1.0, 50.0), "claude-fable-5-1": (10.0, 12.5, 20.0, 0.25, 50.0),
+    "claude-sonnet-5": (2.0, 2.5, 4.0, 0.2, 10.0),
     "claude-sonnet-4-6": (3.0, 3.75, 6.0, 0.3, 15.0),
     "claude-haiku-4-5-20251001": (1.0, 1.25, 2.0, 0.1, 5.0),
     "claude-ocx-native--gpt-5.6-sol": (5.0, 5.0, 5.0, 0.5, 30.0),
@@ -43,6 +44,11 @@ def failure(provider, value):
 def number(value, integer=False):
     try: return int(value or 0) if integer else float(value)
     except (TypeError, ValueError): return 0 if integer else None
+def dig(source, *keys):
+    for key in keys:
+        if not isinstance(source, dict): return None
+        source = source.get(key)
+    return source
 def load(path):
     try: return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError): return {}
@@ -614,9 +620,9 @@ def codex_tokens():
         model, previous = models.get(str(path), "unknown"), collections.Counter()
         for item in jsonl(path):
             payload = item.get("payload") or {}
-            mode = ((payload.get("collaboration_mode") or {}).get("settings", {}) or {}) if isinstance(payload.get("collaboration_mode"), dict) else {}
-            candidate = payload.get("model") if isinstance(payload.get("model"), str) else mode.get("model")
-            if isinstance(candidate, str): model = candidate
+            # VS Code sessions leave threads.model NULL, so session_meta provenance is the only model record.
+            candidate = next((value for value in (payload.get("model"), dig(payload, "collaboration_mode", "settings", "model"), dig(payload, "base_instructions", "provenance", "model")) if isinstance(value, str)), None)
+            if candidate: model = candidate
             if item.get("type") != "event_msg" or payload.get("type") != "token_count": continue
             total = ((payload.get("info") or {}).get("total_token_usage") or {})
             if not total: continue
