@@ -539,6 +539,16 @@ def claude_token(home, failed_token=None):
         if isinstance(payload.get("scope"), str): credentials["scopes"] = payload["scope"].split()
         current["claudeAiOauth"] = credentials; save(path, current, 0o600)
         return token
+def claude_scoped(payload):
+    limits = payload.get("limits")
+    if not isinstance(limits, list): raise RuntimeError("usage response missing limits")
+    rows = []
+    for item in limits:
+        if not isinstance(item, dict) or item.get("kind") != "weekly_scoped": continue
+        name, percent = dig(item, "scope", "model", "display_name"), number(item.get("percent"))
+        if not name or percent is None: raise RuntimeError("scoped weekly limit is incomplete")
+        rows.append({"title": name, "data": quota({"used_percent": percent, "resets_at": item.get("resets_at")}, 10080)})
+    return rows
 def claude():
     home = claude_home()
     try:
@@ -553,8 +563,11 @@ def claude():
     except NETWORK_ERRORS as exc: return blank_provider({"error": failure("Claude", exc)})
     limits = {key: payload.get(key) for key in ("five_hour", "seven_day")}
     data = {"available": any(isinstance(value, dict) for value in limits.values()), "current": quota(limits["five_hour"], 300), "weekly": quota(limits["seven_day"], 10080)}
-    missing = [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits[key], dict)]
-    if missing: data["error"] = notice("Claude", f"{' and '.join(missing)} window missing")
+    problems = [f"{' and '.join(missing)} window missing"] if (missing := [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits[key], dict)]) else []
+    try: scoped = claude_scoped(payload)
+    except RuntimeError as exc: scoped, problems = [], problems + [str(exc)]
+    if scoped: data["rows"] = [{"title": "5h", "data": data["current"]}, {"title": "Week", "data": data["weekly"]}] + scoped
+    if problems: data["error"] = notice("Claude", "; ".join(problems))
     account = load(Path.home() / ".claude.json").get("oauthAccount")
     if isinstance(account, dict) and account.get("accountUuid"):
         data["_account"] = account["accountUuid"]
