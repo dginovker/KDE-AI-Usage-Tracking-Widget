@@ -742,15 +742,16 @@ def compact(value):
     return str(value)
 def money(value): return f"${value:,.0f}"
 def error_signature(text): return re.sub(r" \([\d.]+s\)(?:;.*)?$", "", text.split(" - ", 1)[-1])
-def error_history(data):
+def error_history(data, selected):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
-    items = items if isinstance(items, list) else []; active = active if isinstance(active, dict) else {}
-    current = {name: data[name].get("error", "") for name in PROVIDERS if name in data}
+    items = [item for item in items if isinstance(item, list) and len(item) == 2] if isinstance(items, list) else []
+    active = active if isinstance(active, dict) else {}
+    current = {name: data[name].get("error", "") for name in selected if name in data}
     for name, text in current.items():
-        if text and active.get(name) != error_signature(text): items.append(text)
+        if text and active.get(name) != error_signature(text): items.append([name, text])
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
-    return list(reversed(items[-3:]))
+    return list(reversed([text for name, text in items if name in selected][-3:]))
 def scan_token_usage(names=PROVIDERS):
     scanners = {"codex": codex_tokens, "claude": claude_tokens, "kimi": kimi_tokens, "grok": grok_tokens, "agy": agy_tokens}
     providers = {provider: scanners[provider]() for provider in names}
@@ -780,17 +781,17 @@ def refresh_tokens():
     with (CACHE / "token-stats.lock").open("w") as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return 0
-        save(TOKEN_CACHE, scan_token_usage())
+        data = load(TOKEN_CACHE); data.update(scan_token_usage(selected_providers())); save(TOKEN_CACHE, data)
     return 0
-def token_stats():
+def token_stats(selected):
     data = load(TOKEN_CACHE)
-    missing = [provider for provider in PROVIDERS if not isinstance(data.get(provider), dict)]
+    missing = [provider for provider in selected if not isinstance(data.get(provider), dict)]
     if not missing:
         if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
-            subprocess.Popen([sys.executable, __file__, "--refresh-tokens"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            subprocess.Popen([sys.executable, __file__, "--refresh-tokens", "--providers=" + ",".join(selected)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     else:
         data.update(scan_token_usage(missing)); save(TOKEN_CACHE, data)
-    return summarize_tokens(data)
+    return summarize_tokens({name: data[name] for name in selected})
 def selected_providers():
     value = next((arg.partition("=")[2] for arg in sys.argv if arg.startswith("--providers=")), "")
     selected = tuple(name for name in value.split(",") if name in PROVIDERS)
@@ -802,8 +803,8 @@ def snapshot():
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
         futures = {name: pool.submit(jobs[name]) for name in selected}
         data = {name: future.result() for name, future in futures.items()}
-    data["tokens"] = token_stats()
-    data["errors"] = error_history(data)
+    data["tokens"] = token_stats(selected)
+    data["errors"] = error_history(data, selected)
     update_history(data, history)
     print(json.dumps(data, separators=(",", ":")))
     return 0

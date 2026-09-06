@@ -14,12 +14,6 @@ ColumnLayout {
     PlasmaComponents3.Label {
         text: root.title; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
     }
-    PlasmaComponents3.Label {
-        text: root.provider.account || ""
-        opacity: 0.7; elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter
-        font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
-        Layout.fillWidth: true
-    }
     RingGauge {
         Layout.alignment: Qt.AlignHCenter
         Layout.preferredWidth: Kirigami.Units.iconSizes.huge; Layout.preferredHeight: Layout.preferredWidth
@@ -73,8 +67,12 @@ ColumnLayout {
         font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
     }
     ColumnLayout {
-        visible: Boolean(root.resets.past || root.resets.next || root.resets.banked)
+        visible: Boolean(root.provider.account || root.resets.past || root.resets.next || root.resets.banked)
         spacing: Kirigami.Units.smallSpacing; Layout.fillWidth: true; Layout.topMargin: Kirigami.Units.largeSpacing
+        PlasmaComponents3.Label {
+            visible: Boolean(root.provider.account); text: i18n("Account: %1", root.provider.account || "")
+            opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
+        }
         Repeater {
             model: ["past", "next", "banked"]
             PlasmaComponents3.Label {
