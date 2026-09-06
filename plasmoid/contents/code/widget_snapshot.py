@@ -550,7 +550,9 @@ def claude():
     missing = [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits[key], dict)]
     if missing: data["error"] = notice("Claude", f"{' and '.join(missing)} window missing")
     account = load(Path.home() / ".claude.json").get("oauthAccount")
-    if isinstance(account, dict) and account.get("accountUuid"): data["_account"] = account["accountUuid"]
+    if isinstance(account, dict) and account.get("accountUuid"):
+        data["_account"] = account["accountUuid"]
+        if account.get("emailAddress"): data["account"] = account["emailAddress"]
     return data
 def conversion_ratio(items):
     ratios = []

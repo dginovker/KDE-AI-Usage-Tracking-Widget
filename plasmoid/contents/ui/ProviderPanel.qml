@@ -14,6 +14,12 @@ ColumnLayout {
     PlasmaComponents3.Label {
         text: root.title; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
     }
+    PlasmaComponents3.Label {
+        text: root.provider.account || ""
+        opacity: 0.7; elide: Text.ElideMiddle; horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
+        Layout.fillWidth: true
+    }
     RingGauge {
         Layout.alignment: Qt.AlignHCenter
         Layout.preferredWidth: Kirigami.Units.iconSizes.huge; Layout.preferredHeight: Layout.preferredWidth
