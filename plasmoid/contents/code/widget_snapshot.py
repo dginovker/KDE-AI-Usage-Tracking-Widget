@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import collections, concurrent.futures, datetime as dt, fcntl, itertools, json, math, os, re, select, shutil, sqlite3, subprocess, sys, tempfile, time
+import collections, concurrent.futures, datetime as dt, fcntl, gzip, itertools, json, math, os, re, select, shutil, sqlite3, subprocess, sys, tempfile, time
 from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
@@ -617,73 +617,79 @@ def jsonl(path):
                 except json.JSONDecodeError: pass
     except OSError: return
 def token_windows(): return {key: collections.defaultdict(collections.Counter) for key, _ in TOKEN_WINDOWS}
-def add_tokens(windows, when, model, values):
-    if not when: return
-    age = (now() - when).total_seconds()
+def add_tokens(windows, stamp, model, values):
+    age = time.time() - stamp
     for key, seconds in TOKEN_WINDOWS:
         if seconds is None or age <= seconds: windows[key][model].update(values)
-def codex_tokens():
-    home, windows = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser(), token_windows()
+def event_at(item, key="timestamp"):
+    stamp = moment(item.get(key))
+    return stamp.timestamp() if stamp else None
+def codex_sources():
+    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     models, db = {}, home / "state_5.sqlite"
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
             models = {str(Path(path)): model or "unknown" for path, model in connection.execute("select rollout_path, model from threads") if path}
     except sqlite3.Error: pass
-    for path in (home / "sessions").rglob("*.jsonl") if (home / "sessions").exists() else []:
-        model, previous = models.get(str(path), "unknown"), collections.Counter()
-        for item in jsonl(path):
-            payload = item.get("payload") or {}
-            # VS Code sessions leave threads.model NULL, so session_meta provenance is the only model record.
-            candidate = next((value for value in (payload.get("model"), dig(payload, "collaboration_mode", "settings", "model"), dig(payload, "base_instructions", "provenance", "model")) if isinstance(value, str)), None)
-            if candidate: model = candidate
-            if item.get("type") != "event_msg" or payload.get("type") != "token_count": continue
-            total = ((payload.get("info") or {}).get("total_token_usage") or {})
-            if not total: continue
-            current = collections.Counter({key: number(total.get(key), True) for key in ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens")})
-            delta, previous = current - previous, current
-            add_tokens(windows, moment(item.get("timestamp")), model, {"input": delta["input_tokens"], "cached": delta["cached_input_tokens"], "output": delta["output_tokens"], "tokens": delta["total_tokens"]})
-    return windows
-def claude_tokens():
-    root, windows, seen = Path(os.environ.get("CLAUDE_HOME", "~/.claude")).expanduser() / "projects", token_windows(), set()
-    for path in root.rglob("*.jsonl") if root.exists() else []:
-        for item in jsonl(path):
-            message = item.get("message") or {}
-            usage = message.get("usage") or {}
-            event_id = message.get("id") or item.get("requestId") or item.get("uuid") or (str(path), item.get("timestamp"))
-            if item.get("type") != "assistant" or not isinstance(usage, dict) or event_id in seen: continue
-            seen.add(event_id)
-            creation = usage.get("cache_creation") or {}
-            write5, write1h = number(creation.get("ephemeral_5m_input_tokens"), True), number(creation.get("ephemeral_1h_input_tokens"), True)
-            values = {"input": number(usage.get("input_tokens"), True), "write5": write5, "write1h": write1h, "read": number(usage.get("cache_read_input_tokens"), True), "output": number(usage.get("output_tokens"), True)}
-            values["write_unknown"] = max(0, number(usage.get("cache_creation_input_tokens"), True) - write5 - write1h)
-            values["tokens"] = sum(values.values())
-            add_tokens(windows, moment(item.get("timestamp")), message.get("model") or "unknown", values)
-    return windows
-def kimi_tokens():
-    root, windows = kimi_home() / "sessions", token_windows()
-    for path in root.rglob("wire.jsonl") if root.exists() else []:
-        for item in jsonl(path):
-            usage = item.get("usage") or {}
-            if item.get("type") != "usage.record" or item.get("usageScope") != "turn" or not isinstance(usage, dict): continue
-            values = {"input": number(usage.get("inputOther"), True) + number(usage.get("inputCacheCreation"), True), "cached": number(usage.get("inputCacheRead"), True), "output": number(usage.get("output"), True)}
-            values["tokens"] = sum(values.values())
-            add_tokens(windows, moment(item.get("time")), item.get("model") or "unknown", values)
-    return windows
-def grok_tokens():
-    windows, seen = token_windows(), set()
-    for path in (grok_home() / "sessions").rglob("updates.jsonl"):
-        for item in jsonl(path):
-            params = item.get("params") or {}; usage = (params.get("update") or {}).get("usage")
-            if not isinstance(usage, dict): continue
-            meta = params["_meta"]; event = meta["eventId"]
-            if event in seen: continue
-            seen.add(event)
-            for model, raw in usage["modelUsage"].items():
-                values = {"input": int(raw["inputTokens"]), "cached": int(raw["cachedReadTokens"]), "output": int(raw["outputTokens"]), "tokens": int(raw["totalTokens"])}
-                if "costUsdTicks" in raw: values["cost"] = int(raw["costUsdTicks"]) / 10**10
-                else: values["uncosted"] = values["tokens"]
-                add_tokens(windows, moment(meta["agentTimestampMs"]), "grok-4.5" if model == "grok-4.5-build" else model, values)
-    return windows
+    root = home / "sessions"
+    # The sqlite-derived model rides in the cache signature, so relabelling a thread re-parses its rollout.
+    return [(path, models.get(str(path), "unknown")) for path in (root.rglob("*.jsonl") if root.exists() else [])]
+def codex_events(path, model):
+    previous = collections.Counter()
+    for item in jsonl(path):
+        payload = item.get("payload") or {}
+        # VS Code sessions leave threads.model NULL, so session_meta provenance is the only model record.
+        candidate = next((value for value in (payload.get("model"), dig(payload, "collaboration_mode", "settings", "model"), dig(payload, "base_instructions", "provenance", "model")) if isinstance(value, str)), None)
+        if candidate: model = candidate
+        if item.get("type") != "event_msg" or payload.get("type") != "token_count": continue
+        total = ((payload.get("info") or {}).get("total_token_usage") or {})
+        if not total: continue
+        current = collections.Counter({key: number(total.get(key), True) for key in ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens")})
+        delta, previous = current - previous, current
+        stamp = event_at(item)
+        if stamp is not None: yield [None, stamp, model, {"input": delta["input_tokens"], "cached": delta["cached_input_tokens"], "output": delta["output_tokens"], "tokens": delta["total_tokens"]}]
+def claude_sources():
+    root = Path(os.environ.get("CLAUDE_HOME", "~/.claude")).expanduser() / "projects"
+    return [(path, None) for path in (root.rglob("*.jsonl") if root.exists() else [])]
+def claude_events(path, _):
+    for item in jsonl(path):
+        message = item.get("message") or {}
+        usage = message.get("usage") or {}
+        if item.get("type") != "assistant" or not isinstance(usage, dict): continue
+        creation = usage.get("cache_creation") or {}
+        write5, write1h = number(creation.get("ephemeral_5m_input_tokens"), True), number(creation.get("ephemeral_1h_input_tokens"), True)
+        values = {"input": number(usage.get("input_tokens"), True), "write5": write5, "write1h": write1h, "read": number(usage.get("cache_read_input_tokens"), True), "output": number(usage.get("output_tokens"), True)}
+        values["write_unknown"] = max(0, number(usage.get("cache_creation_input_tokens"), True) - write5 - write1h)
+        values["tokens"] = sum(values.values())
+        stamp = event_at(item)
+        # Resumed sessions and subagent copies replay the same message into several files; the id keeps one count.
+        if stamp is not None: yield [message.get("id") or item.get("requestId") or item.get("uuid") or f"{path}:{item.get('timestamp')}", stamp, message.get("model") or "unknown", values]
+def kimi_sources():
+    root = kimi_home() / "sessions"
+    return [(path, None) for path in (root.rglob("wire.jsonl") if root.exists() else [])]
+def kimi_events(path, _):
+    for item in jsonl(path):
+        usage = item.get("usage") or {}
+        if item.get("type") != "usage.record" or item.get("usageScope") != "turn" or not isinstance(usage, dict): continue
+        values = {"input": number(usage.get("inputOther"), True) + number(usage.get("inputCacheCreation"), True), "cached": number(usage.get("inputCacheRead"), True), "output": number(usage.get("output"), True)}
+        values["tokens"] = sum(values.values())
+        stamp = event_at(item, "time")
+        if stamp is not None: yield [None, stamp, item.get("model") or "unknown", values]
+def grok_sources():
+    root = grok_home() / "sessions"
+    return [(path, None) for path in (root.rglob("updates.jsonl") if root.exists() else [])]
+def grok_events(path, _):
+    for item in jsonl(path):
+        params = item.get("params") or {}; usage = (params.get("update") or {}).get("usage")
+        if not isinstance(usage, dict): continue
+        meta = params["_meta"]; event = meta["eventId"]
+        stamp = moment(meta["agentTimestampMs"])
+        if stamp is None: continue
+        for model, raw in usage["modelUsage"].items():
+            values = {"input": int(raw["inputTokens"]), "cached": int(raw["cachedReadTokens"]), "output": int(raw["outputTokens"]), "tokens": int(raw["totalTokens"])}
+            if "costUsdTicks" in raw: values["cost"] = int(raw["costUsdTicks"]) / 10**10
+            else: values["uncosted"] = values["tokens"]
+            yield [f"{event}:{model}", stamp.timestamp(), "grok-4.5" if model == "grok-4.5-build" else model, values]
 def protobuf_varint(data, offset=0):
     value = shift = 0
     while offset < len(data):
@@ -705,35 +711,38 @@ def protobuf_fields(data):
     return fields
 def protobuf_first(fields, field, wire=None):
     return next((value for key, kind, value in fields if key == field and (wire is None or kind == wire)), None)
-def agy_tokens():
-    windows, seen = token_windows(), set()
-    for path in (agy_home() / "conversations").glob("*.db"):
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-            timestamps = {}
-            for index, metadata in connection.execute("select idx, metadata from steps"):
-                stamp = protobuf_first(protobuf_fields(metadata), 1, 2)
-                if stamp: timestamps[index] = protobuf_first(protobuf_fields(stamp), 1, 0)
-            for index, data in connection.execute("select idx, data from gen_metadata"):
-                top = protobuf_fields(data); generation = protobuf_first(top, 1, 2)
-                if not generation: continue
-                generation = protobuf_fields(generation); stats = protobuf_first(generation, 4, 2)
-                if not stats: continue
-                stats = protobuf_fields(stats)
-                event = protobuf_first(stats, 7, 2) or protobuf_first(stats, 11, 2) or f"{path}:{index}".encode()
-                if event in seen: continue
-                seen.add(event)
-                model = (protobuf_first(generation, 19, 2) or b"unknown").decode(errors="replace")
-                input_tokens = protobuf_first(stats, 2, 0) or 0
-                output_tokens = protobuf_first(stats, 3, 0) or 0
-                prompt_tokens = protobuf_first(stats, 5, 0) or 0
-                if model.startswith("gemini-3.1-pro") and prompt_tokens > 200000: model = "gemini-3.1-pro (>200k)"
-                total_input = max(input_tokens, prompt_tokens)
-                values = {"input": total_input, "cached": max(0, prompt_tokens - input_tokens), "output": output_tokens, "tokens": total_input + output_tokens}
-                packed, offset, references = protobuf_first(top, 2, 2) or b"", 0, []
-                while offset < len(packed):
-                    reference, offset = protobuf_varint(packed, offset); references.append(reference)
-                add_tokens(windows, moment(max((timestamps.get(reference) or 0 for reference in references), default=0)), model, values)
-    return windows
+def agy_sources():
+    def companion(path):
+        # sqlite writes land in -wal before the .db mtime moves, so the wal stamp guards the signature.
+        try: stat = Path(str(path) + "-wal").stat()
+        except OSError: return None
+        return [stat.st_mtime_ns, stat.st_size]
+    return [(path, companion(path)) for path in (agy_home() / "conversations").glob("*.db")]
+def agy_events(path, _):
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        timestamps = {}
+        for index, metadata in connection.execute("select idx, metadata from steps"):
+            stamp = protobuf_first(protobuf_fields(metadata), 1, 2)
+            if stamp: timestamps[index] = protobuf_first(protobuf_fields(stamp), 1, 0)
+        for index, data in connection.execute("select idx, data from gen_metadata"):
+            top = protobuf_fields(data); generation = protobuf_first(top, 1, 2)
+            if not generation: continue
+            generation = protobuf_fields(generation); stats = protobuf_first(generation, 4, 2)
+            if not stats: continue
+            stats = protobuf_fields(stats)
+            event = protobuf_first(stats, 7, 2) or protobuf_first(stats, 11, 2) or f"{path}:{index}".encode()
+            model = (protobuf_first(generation, 19, 2) or b"unknown").decode(errors="replace")
+            input_tokens = protobuf_first(stats, 2, 0) or 0
+            output_tokens = protobuf_first(stats, 3, 0) or 0
+            prompt_tokens = protobuf_first(stats, 5, 0) or 0
+            if model.startswith("gemini-3.1-pro") and prompt_tokens > 200000: model = "gemini-3.1-pro (>200k)"
+            total_input = max(input_tokens, prompt_tokens)
+            values = {"input": total_input, "cached": max(0, prompt_tokens - input_tokens), "output": output_tokens, "tokens": total_input + output_tokens}
+            packed, offset, references = protobuf_first(top, 2, 2) or b"", 0, []
+            while offset < len(packed):
+                reference, offset = protobuf_varint(packed, offset); references.append(reference)
+            stamp = moment(max((timestamps.get(reference) or 0 for reference in references), default=0))
+            if stamp is not None: yield [event.hex(), stamp.timestamp(), model, values]
 def model_cost(provider, model, values):
     if provider == "grok": return number(values.get("cost")) if "cost" in values else None
     if provider == "agy":
@@ -765,10 +774,82 @@ def error_history(data, selected):
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
     return list(reversed([text for name, text in items if name in selected][-3:]))
+def events_cache(provider): return CACHE / f"token-events-{provider}.jsonl.gz"
+def cached_lines(path):
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            yield from handle
+    except FileNotFoundError: return
+    except (OSError, EOFError) as issue:
+        print(f"token cache {path.name} unreadable ({issue}); re-parsing the rest from source", file=sys.stderr)
+LIFETIME, HORIZON = TOKEN_WINDOWS[0][0], max(seconds for _, seconds in TOKEN_WINDOWS if seconds)
+def settle(events):
+    """Split events the widest bounded window can never reach again; those only ever land in lifetime.
+
+    Only un-deduped events fold, since a rollup has no ids left to match against other files.
+    """
+    cutoff, live, settled = time.time() - HORIZON, [], collections.defaultdict(collections.Counter)
+    for event in events:
+        event_id, stamp, model, values = event
+        if event_id is None and stamp < cutoff: settled[model].update(values)
+        else: live.append(event)
+    return live, {model: dict(values) for model, values in settled.items()}
+def signature(path, extra):
+    try: stat = path.stat()
+    except OSError: return None
+    return [stat.st_mtime_ns, stat.st_size, extra]
+def scan_provider(provider, sources, extract):
+    """Fold one provider's history into windows, parsing only files whose signature moved.
+
+    Session logs are append-only, so an unchanged (mtime, size, extra) means the stored parse still holds.
+    The cache is streamed one file at a time, keeping memory flat as history grows.
+    """
+    pending = {str(path): (path, extra) for path, extra in sources}
+    windows, best, stats = token_windows(), {}, {"provider": provider, "reused": 0, "parsed": 0, "mb": 0.0}
+    def absorb(entry):
+        for model, values in (entry.get("settled") or {}).items(): windows[LIFETIME][model].update(values)
+        for event_id, stamp, model, values in entry["events"]:
+            if event_id is None:
+                add_tokens(windows, stamp, model, values); continue
+            # Streaming records a message id twice: mid-flight with a partial output count, then complete.
+            # Keeping the largest total picks the finished copy and makes the result independent of read order.
+            winner = best.get(event_id)
+            if winner is None or values["tokens"] > winner[2]["tokens"]: best[event_id] = (stamp, model, values)
+    cache = events_cache(provider)
+    tmp = cache.with_suffix(".tmp")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with gzip.open(tmp, "wt", encoding="utf-8") as out:
+        for line in cached_lines(cache):
+            try: entry = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"token cache {cache.name} holds an unreadable entry; re-parsing that file", file=sys.stderr); continue
+            source = pending.get(entry["path"])
+            if source is None or entry["sig"] != signature(*source): continue
+            del pending[entry["path"]]
+            absorb(entry); out.write(line); stats["reused"] += 1
+        for path, extra in pending.values():
+            sig = signature(path, extra)
+            if sig is None: continue
+            events, settled = settle(extract(path, extra))
+            entry = {"path": str(path), "sig": sig, "events": events, "settled": settled}
+            absorb(entry); out.write(json.dumps(entry, separators=(",", ":")) + "\n")
+            stats["parsed"] += 1; stats["mb"] += sig[1] / 1048576
+    tmp.replace(cache)
+    for stamp, model, values in best.values(): add_tokens(windows, stamp, model, values)
+    stats["mb"], stats["deduped"] = round(stats["mb"], 1), len(best)
+    return windows, stats
 def scan_token_usage(names=PROVIDERS):
-    scanners = {"codex": codex_tokens, "claude": claude_tokens, "kimi": kimi_tokens, "grok": grok_tokens, "agy": agy_tokens}
-    providers = {provider: scanners[provider]() for provider in names}
-    return {provider: {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS} for provider, windows in providers.items()}
+    scanners = {"codex": (codex_sources, codex_events), "claude": (claude_sources, claude_events), "kimi": (kimi_sources, kimi_events), "grok": (grok_sources, grok_events), "agy": (agy_sources, agy_events)}
+    result, report = {}, []
+    for provider in names:
+        started = time.monotonic()
+        sources, extract = scanners[provider]
+        windows, stats = scan_provider(provider, sources(), extract)
+        stats["seconds"] = round(time.monotonic() - started, 2)
+        result[provider] = {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS}
+        report.append(stats); print("token scan " + json.dumps(stats, separators=(",", ":")), file=sys.stderr)
+    result["scan"] = report
+    return result
 def summarize_tokens(providers):
     rows, unpriced = [], set()
     for key, _ in TOKEN_WINDOWS:
