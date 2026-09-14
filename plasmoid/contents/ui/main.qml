@@ -14,6 +14,7 @@ PlasmoidItem {
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
     property var snapshot: ({}); property bool loading: false; property string lastError: ""; property string lastUpdated: ""
+    property string refreshStarted: ""
     Plasmoid.title: i18n("AI Usage Rings"); Plasmoid.icon: "utilities-system-monitor"
     Plasmoid.status: PlasmaCore.Types.ActiveStatus; Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
     toolTipMainText: i18n("AI Usage")
@@ -56,7 +57,7 @@ PlasmoidItem {
                     HoverHandler { id: refreshHover }
                     PlasmaComponents3.ToolTip {
                         visible: refreshHover.hovered; delay: Kirigami.Units.toolTipDelay
-                        text: root.loading ? i18n("Refreshing usage...")
+                        text: root.loading ? i18n("Refreshing usage since %1...", root.refreshStarted)
                             : root.lastError ? i18n("Refresh failed: %1. Click to retry.", root.lastError)
                             : root.lastUpdated ? i18n("Updated %1. Click to refresh.", root.lastUpdated)
                             : i18n("Click to refresh usage.")
@@ -167,6 +168,7 @@ PlasmoidItem {
     function refreshData() {
         if (loading) return;
         activeSource = "python3 " + quote(helperPath) + " --providers=" + quote(providers.join(",")) + " --stamp " + Date.now();
+        refreshStarted = Qt.formatTime(new Date(), "HH:mm:ss");
         loading = true; executable.connectSource(activeSource);
     }
     function provider(name) { return snapshot && typeof snapshot === "object" ? snapshot[name] || {} : {}; }

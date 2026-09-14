@@ -766,14 +766,15 @@ def money(value): return f"${value:,.0f}"
 def error_signature(text): return re.sub(r" \([\d.]+s\)(?:;.*)?$", "", text.split(" - ", 1)[-1])
 def error_history(data, selected):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
-    items = [item for item in items if isinstance(item, list) and len(item) == 2] if isinstance(items, list) else []
+    cutoff = time.time() - 86400
+    items = [item for item in items if isinstance(item, list) and len(item) == 3 and number(item[2], True) >= cutoff] if isinstance(items, list) else []
     active = active if isinstance(active, dict) else {}
     current = {name: data[name].get("error", "") for name in selected if name in data}
     for name, text in current.items():
-        if text and active.get(name) != error_signature(text): items.append([name, text])
+        if text and active.get(name) != error_signature(text): items.append([name, text, int(time.time())])
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
-    return list(reversed([text for name, text in items if name in selected][-3:]))
+    return list(reversed([text for name, text, at in items if name in selected][-3:]))
 def events_cache(provider): return CACHE / f"token-events-{provider}.jsonl.gz"
 def cached_lines(path):
     try:
