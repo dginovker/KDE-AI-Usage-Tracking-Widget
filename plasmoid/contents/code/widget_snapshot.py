@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-import collections, concurrent.futures, datetime as dt, fcntl, gzip, itertools, json, math, os, re, select, shutil, sqlite3, subprocess, sys, tempfile, time
+import collections, concurrent.futures, datetime as dt, gzip, itertools, json, math, os, queue, re, shutil, sqlite3, subprocess, sys, tempfile, threading, time
+if os.name == "nt":
+    import msvcrt
+    class fcntl:
+        LOCK_EX, LOCK_NB = 1, 2
+        @staticmethod
+        def flock(file, flags):
+            file.seek(0)
+            try: msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK if flags & fcntl.LOCK_NB else msvcrt.LK_LOCK, 1)
+            except OSError as exc: raise BlockingIOError(str(exc)) from exc
+else:
+    import fcntl
 from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
@@ -36,7 +47,7 @@ GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 AGY_RPC = "/exa.language_server_pb.LanguageServerService/"
 RESET_API = "https://codex-reset.com/api/"
 def now(): return dt.datetime.now().astimezone()
-def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
+def notice(provider, reason): return f"{now():%b %d %H:%M} - {provider}: {reason}"
 def failure(provider, value):
     code, text = getattr(value, "code", None), str(value).lower()
     reason = "unauthorized (401)" if code == 401 or "401" in text else "forbidden (403)" if code == 403 or "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else "usage lookup failed"
@@ -91,7 +102,7 @@ def reset_fields(epoch):
     elif seconds < 7 * 86400:
         label = reset.strftime("%a %H:%M")
     else:
-        label = reset.strftime("%b %-d %H:%M")
+        label = reset.strftime("%b %d %H:%M")
     return {"reset": reset.timestamp(), "reset_label": f"Resets {label}", "days": str(seconds // 86400)}
 def quota_health(used, reset, minutes):
     if used is None: return {"pace": "--", "color": ""}
@@ -329,9 +340,17 @@ def rpc(process, payload, timeout=5):
     if not process.stdin or not process.stdout: return None
     process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
     process.stdin.flush()
+    if not hasattr(process, "_rpc_lines"):
+        process._rpc_lines = queue.Queue()
+        def read_lines():
+            try:
+                for line in process.stdout: process._rpc_lines.put(line)
+            finally: process._rpc_lines.put(None)
+        threading.Thread(target=read_lines, daemon=True).start()
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and select.select([process.stdout], [], [], deadline - time.monotonic())[0]:
-        line = process.stdout.readline()
+    while time.monotonic() < deadline:
+        try: line = process._rpc_lines.get(timeout=max(0, deadline - time.monotonic()))
+        except queue.Empty: break
         if not line: break
         try:
             response = json.loads(line)
@@ -348,7 +367,7 @@ def short_time(value):
     if delta == 0: return "today " + value.strftime("%H:%M")
     if delta == 1: return "tomorrow " + value.strftime("%H:%M")
     if delta == -1: return "yesterday " + value.strftime("%H:%M")
-    return value.strftime("%a %H:%M") if abs(delta) < 7 else value.strftime("%b %-d %H:%M")
+    return value.strftime("%a %H:%M") if abs(delta) < 7 else value.strftime("%b %d %H:%M")
 def reset_info():
     headers = {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}
     result = {}
@@ -389,9 +408,9 @@ def codex_windows(limits):
     return {str(minutes): item for item in values if isinstance(item, dict) and (minutes := round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0))}
 def codex_attempt(binary, deadline):
     started, process, stage, result, issue = time.monotonic(), None, "start", None, None
-    stderr = tempfile.TemporaryFile(mode="w+t")
+    stderr = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
     try:
-        process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
+        process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, encoding="utf-8", bufsize=1, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         stage = "initialize"
         left = deadline - time.monotonic()
         if left <= 0: raise TimeoutError("lookup budget exhausted")
@@ -628,7 +647,7 @@ def codex_sources():
     home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     models, db = {}, home / "state_5.sqlite"
     try:
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+        with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as connection:
             models = {str(Path(path)): model or "unknown" for path, model in connection.execute("select rollout_path, model from threads") if path}
     except sqlite3.Error: pass
     root = home / "sessions"
@@ -873,7 +892,7 @@ def summarize_tokens(providers):
     return {"windows": rows, "note": note}
 def refresh_tokens():
     CACHE.mkdir(parents=True, exist_ok=True)
-    with (CACHE / "token-stats.lock").open("w") as lock:
+    with (CACHE / "token-stats.lock").open("a+") as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return 0
         data = load(TOKEN_CACHE); data.update(scan_token_usage(selected_providers())); save(TOKEN_CACHE, data)
@@ -883,7 +902,7 @@ def token_stats(selected):
     missing = [provider for provider in selected if not isinstance(data.get(provider), dict)]
     if not missing:
         if time.time() - TOKEN_CACHE.stat().st_mtime > 600:
-            subprocess.Popen([sys.executable, __file__, "--refresh-tokens", "--providers=" + ",".join(selected)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            subprocess.Popen([sys.executable, __file__, "--refresh-tokens", "--providers=" + ",".join(selected)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     else:
         data.update(scan_token_usage(missing)); save(TOKEN_CACHE, data)
     return summarize_tokens({name: data[name] for name in selected})

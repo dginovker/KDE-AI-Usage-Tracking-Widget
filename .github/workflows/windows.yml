@@ -1,0 +1,24 @@
+name: Windows port
+on: [push, pull_request]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Geometry regression checks
+        shell: powershell
+        run: ./windows/test.ps1
+      - name: Build app
+        shell: powershell
+        run: ./windows/build.ps1
+  collector:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python windows/test_collector.py
