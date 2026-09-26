@@ -68,6 +68,10 @@ ColumnLayout {
         horizontalAlignment: Text.AlignRight; Layout.fillWidth: true
         font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
     }
+    PlasmaComponents3.Label {
+        visible: Boolean(root.provider.observed_reset)
+        text: root.provider.observed_reset || ""; opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
+    }
     ColumnLayout {
         visible: Boolean(root.provider.account || root.resets.past || root.resets.next || root.resets.banked || root.resets.error || root.resets.history_error)
         spacing: Kirigami.Units.smallSpacing; Layout.fillWidth: true; Layout.topMargin: Kirigami.Units.largeSpacing

@@ -37,6 +37,7 @@ CLAUDE_CLIENT_ID, CLAUDE_API_URL, CLAUDE_TOKEN_URL = "9d1c250a-e61b-44d9-88ed-59
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 AGY_RPC = "/exa.language_server_pb.LanguageServerService/"
 RESET_API = "https://codex-reset.com/api/"
+RESET_HISTORY = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser() / "ai-usage/codex-resets.json"
 def now(): return dt.datetime.now().astimezone()
 def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
 def failure(provider, value):
@@ -488,6 +489,28 @@ def codex_error(issue, attempts, elapsed):
     reason += f" ({elapsed:.1f}s)"
     if issue.get("stderr"): reason += "; " + issue["stderr"]
     return notice("Codex", reason)
+def track_codex_reset(account, weekly, observed_at):
+    if not account: raise ValueError("account ID missing")
+    sample = {"at": observed_at, "used": weekly.get("used"), "reset": weekly.get("reset")}
+    if any(value is None or not math.isfinite(value) for value in sample.values()): raise ValueError("weekly quota observation incomplete")
+    RESET_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with Path(str(RESET_HISTORY) + ".lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        history = json.loads(RESET_HISTORY.read_text()) if RESET_HISTORY.exists() else {}
+        state = history.setdefault(account, {"previous": None, "events": []})
+        previous = state["previous"]
+        if previous and sample["at"] <= previous["at"]: return ""
+        # Require both a quota drop and a moved weekly boundary to exclude small usage corrections.
+        if previous and sample["used"] < previous["used"] and sample["reset"] > previous["reset"] + 60:
+            kind = "early" if sample["at"] < previous["reset"] else "scheduled window" if previous["at"] < previous["reset"] <= sample["at"] else "uncertain timing"
+            state["events"].append({"after": previous["at"], "by": sample["at"], "kind": kind,
+                                    "used_before": previous["used"], "used_after": sample["used"],
+                                    "previous_reset": previous["reset"], "next_reset": sample["reset"]})
+        state["previous"] = sample
+        save(RESET_HISTORY, history, 0o600)
+        if not state["events"]: return "Tracking quota resets — no reset observed yet"
+        event = state["events"][-1]
+        return f"Quota reset observed ({event['kind']}): {short_time(event['after'])} – {short_time(event['by'])}"
 def codex_usage():
     home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     auth = load(home / "auth.json"); tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
@@ -512,7 +535,11 @@ def codex_usage():
         cached = {"account": account, "observed_at": time.time(), "source": "network", "windows": windows, "credits": credits, "last_attempt": diagnostic}
         try: save(CODEX_CACHE, cached, 0o600)
         except OSError as exc: return codex_provider(windows, credits, error_text=notice("Codex", f"cache write failed ({exc.errno})"))
-        return codex_provider(windows, credits)
+        data = codex_provider(windows, credits)
+        try: data["observed_reset"] = track_codex_reset(account, data["weekly"], cached["observed_at"])
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            data["error"] = notice("Codex", f"reset tracking failed: {exc}")
+        return data
     issue = issues[-1] if issues else {"stage": "lookup", "message": "budget exhausted", "stderr": "", "timeout": True}
     diagnostic.update(stage=issue["stage"], timeout=issue.get("timeout", False), reason=issue.get("reason", ""), message=issue.get("message", ""), stderr=issue.get("stderr", ""))
     observed = number(cached.get("observed_at")) or 0
