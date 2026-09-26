@@ -183,7 +183,7 @@ PlasmoidItem {
     function providerLabel(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
     function errors() {
         const values = (snapshot.errors || []).slice();
-        if (lastError) values.unshift(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
+        if (lastError) values.push(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
         return values.join("\n");
     }
     function providerList(claude, codex, kimi, grok, agy) {

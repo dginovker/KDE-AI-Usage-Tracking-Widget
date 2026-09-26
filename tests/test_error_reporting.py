@@ -23,13 +23,13 @@ class ErrorReportingTests(unittest.TestCase):
             current = 'Sep 26 13:35 - Claude: rate limited (429)'
             self.assertEqual(snapshot.error_history({'claude': {'error': current}}, ['claude']), [current])
 
-    def test_current_errors_precede_history_without_duplicates(self):
+    def test_current_errors_follow_history_without_duplicates(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(snapshot, 'ERROR_CACHE', Path(directory) / 'errors.json'):
             old = 'Sep 26 10:00 - Claude: forbidden (403)'
             snapshot.error_history({'claude': {'error': old}}, ['claude'])
             current = 'Sep 26 13:35 - Claude: rate limited (429)'
-            self.assertEqual(snapshot.error_history({'claude': {'error': current}}, ['claude']), [current, old])
-            self.assertEqual(snapshot.error_history({'claude': {'error': current}}, ['claude']), [current, old])
+            self.assertEqual(snapshot.error_history({'claude': {'error': current}}, ['claude']), [old, current])
+            self.assertEqual(snapshot.error_history({'claude': {'error': current}}, ['claude']), [old, current])
 
 
 if __name__ == '__main__':
