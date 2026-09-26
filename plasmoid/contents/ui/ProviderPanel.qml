@@ -11,6 +11,7 @@ ColumnLayout {
     Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
     function quota(name) { return provider[name] || {}; }
     function used(name) { return typeof quota(name).used === "number" ? quota(name).used : -1; }
+    property QtObject resetIndicator: ResetIndicator { resets: root.resets }
     PlasmaComponents3.Label {
         text: root.title; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
     }
@@ -19,6 +20,7 @@ ColumnLayout {
         Layout.preferredWidth: Kirigami.Units.iconSizes.huge; Layout.preferredHeight: Layout.preferredWidth
         percent: root.used("weekly"); innerPercent: root.used("current")
         centerText: root.quota("weekly").days || "?"
+        centerColor: root.resetIndicator.announced ? "#80f0ff" : Kirigami.Theme.textColor
         accentColor: root.quota("weekly").color || ""; innerAccentColor: root.quota("current").color || ""
     }
     PlasmaComponents3.Label {
@@ -67,7 +69,7 @@ ColumnLayout {
         font.pixelSize: Math.max(9, Kirigami.Theme.defaultFont.pixelSize * 0.86)
     }
     ColumnLayout {
-        visible: Boolean(root.provider.account || root.resets.past || root.resets.next || root.resets.banked)
+        visible: Boolean(root.provider.account || root.resets.past || root.resets.next || root.resets.banked || root.resets.error || root.resets.history_error)
         spacing: Kirigami.Units.smallSpacing; Layout.fillWidth: true; Layout.topMargin: Kirigami.Units.largeSpacing
         PlasmaComponents3.Label {
             visible: Boolean(root.provider.account); text: i18n("Account: %1", root.provider.account || "")
@@ -76,12 +78,20 @@ ColumnLayout {
         Repeater {
             model: ["past", "next", "banked"]
             PlasmaComponents3.Label {
-                visible: Boolean(root.resets[modelData])
-                text: modelData === "past" ? i18n("Past: %1", root.resets.past || "")
-                    : modelData === "next" ? i18n("Next odds: %1", root.resets.next || "")
+                visible: Boolean(root.resets[modelData]) && (modelData !== "next" || !resetIndicator.unavailable)
+                text: modelData === "past" ? i18n("Announcements: %1", root.resets.past || "")
+                    : modelData === "next" ? resetIndicator.message
                     : i18n("Banked: %1", root.resets.banked || "")
                 opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
+        }
+        PlasmaComponents3.Label {
+            visible: resetIndicator.unavailable
+            text: resetIndicator.message; color: "#fdbc4b"; wrapMode: Text.WordWrap; Layout.fillWidth: true
+        }
+        PlasmaComponents3.Label {
+            visible: Boolean(root.resets.history_error)
+            text: root.resets.history_error || ""; color: "#fdbc4b"; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
     }
 }

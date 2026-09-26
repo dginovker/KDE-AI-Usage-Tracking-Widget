@@ -4,6 +4,7 @@ Item {
     id: root
     property real percent: -1; property real innerPercent: -1
     property string centerText: "--"; property string accentColor: ""; property string innerAccentColor: ""
+    property color centerColor: Kirigami.Theme.textColor
     implicitWidth: Kirigami.Units.iconSizes.medium; implicitHeight: implicitWidth
     function ring(ctx, radius, stroke, value, color) {
         ctx.lineWidth = stroke; ctx.lineCap = "round"; ctx.beginPath();
@@ -26,7 +27,7 @@ Item {
         }
     }
     Text {
-        anchors.centerIn: parent; text: String(root.centerText); color: Kirigami.Theme.textColor; font.bold: true
+        anchors.centerIn: parent; text: String(root.centerText); color: root.centerColor; font.bold: true
         font.pixelSize: Math.max(8, Math.min(parent.width, parent.height) * (text.length > 2 ? 0.24 : 0.31))
     }
     onPercentChanged: canvas.requestPaint(); onInnerPercentChanged: canvas.requestPaint()

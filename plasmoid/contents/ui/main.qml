@@ -33,6 +33,12 @@ PlasmoidItem {
                     centerText: root.quota(modelData, "weekly").days || "?"
                     accentColor: root.quota(modelData, "weekly").color || ""
                     innerAccentColor: root.quota(modelData, "current").color || ""
+                    centerColor: resetIndicator.announced ? "#80f0ff" : Kirigami.Theme.textColor
+                    ResetIndicator {
+                        id: resetIndicator
+                        anchors.fill: parent
+                        resets: modelData === "codex" ? (root.provider("codex").global_resets || {}) : ({})
+                    }
                 }
             }
         }
@@ -137,7 +143,7 @@ PlasmoidItem {
             }
             PlasmaComponents3.Label {
                 visible: root.provider("claude").available === false
-                text: i18n("Claude usage will appear after the next Claude Code response.")
+                text: root.provider("claude").error || i18n("Claude usage unavailable: no quota data returned.")
                 opacity: 0.7; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
             PlasmaComponents3.Label {

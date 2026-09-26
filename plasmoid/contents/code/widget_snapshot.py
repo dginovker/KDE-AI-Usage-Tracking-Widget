@@ -41,6 +41,9 @@ def now(): return dt.datetime.now().astimezone()
 def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
 def failure(provider, value):
     code, text = getattr(value, "code", None), str(value).lower()
+    if code:
+        reason = {401: "unauthorized", 403: "forbidden", 429: "rate limited — too many requests"}.get(code, "HTTP request failed")
+        return notice(provider, f"{reason} ({code})")
     reason = "unauthorized (401)" if code == 401 or "401" in text else "forbidden (403)" if code == 403 or "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else "usage lookup failed"
     return notice(provider, reason)
 def number(value, integer=False):
@@ -358,25 +361,44 @@ def reset_info():
         timeline = pool.submit(http, RESET_API + "timeline?group=reset", headers, None, 3)
         prediction = pool.submit(http, RESET_API + "forecast", headers, None, 3)
     try:
-        events = timeline.result().get("events", [])
-        events = events if isinstance(events, list) else []
+        events = timeline.result().get("events")
+        if not isinstance(events, list): raise ValueError("missing events list")
         labels = [short_time(item.get("announced_at")) for item in events if isinstance(item, dict)][:3]
         if labels: result["past"] = " | ".join(filter(None, labels))
-    except NETWORK_ERRORS: pass
+    except (*NETWORK_ERRORS, ValueError, TypeError, AttributeError) as exc:
+        result["history_error"] = f"Announcement history unavailable: {exc}"
     try:
         forecast = prediction.result()
         updated = moment(forecast.get("updated_at"))
-        if not updated or abs((now() - updated).total_seconds()) > 7200: return result
+        if not updated or abs((now() - updated).total_seconds()) > 7200:
+            raise ValueError("forecast timestamp missing or older than 2 hours")
+        result["fresh_until"] = updated.timestamp() + 7200
         signal = forecast.get("official_signal")
         if signal:
-            window = signal.get("official_window", signal.get("window", {})) if isinstance(signal, dict) else {}
-            label = window.get("label") if isinstance(window, dict) else None
-            result["next"] = str(label).capitalize() + " (announced)" if label else "Announced"
+            if not isinstance(signal, dict): raise ValueError("invalid official signal")
+            announced = moment(signal.get("at"))
+            if not announced: raise ValueError("announcement timestamp missing")
+            window = signal.get("official_window") or signal.get("window") or {}
+            if not isinstance(window, dict): raise ValueError("invalid announcement window")
+            deadline = moment(window.get("end_at"))
+            # An undated promise must not keep an urgent badge alive indefinitely.
+            expires = deadline.timestamp() if deadline else announced.timestamp() + 86400
+            result.update(announced_at=announced.timestamp(), alert_until=expires,
+                          announcement_url=signal.get("url", ""),
+                          next="Reset announced — timing unconfirmed")
+            if deadline:
+                result["next"] = f"Reset announced — by {short_time(deadline.timestamp())} (unverified)"
+            if expires <= now().timestamp(): result["next"] = "Earlier reset announcement — completion unverified"
+            completed = moment(forecast.get("last_reset_at"))
+            if completed and completed >= announced:
+                result.update(alert_until=0, next="Reset reported complete by tracker")
         else:
             odds = forecast.get("probabilities", {})
             day, two_days = number(odds.get("rounded_24h")), number(odds.get("rounded_48h"))
-            if day is not None and two_days is not None: result["next"] = f"24h ~{round(day)}%, 48h ~{round(two_days)}%"
-    except NETWORK_ERRORS: pass
+            if day is None or two_days is None: raise ValueError("forecast probabilities missing")
+            result["next"] = f"Next odds: 24h ~{round(day)}%, 48h ~{round(two_days)}% (experimental)"
+    except (*NETWORK_ERRORS, ValueError, TypeError, AttributeError) as exc:
+        result["error"] = f"Reset information unavailable: {exc}"
     return result
 def banked(payload):
     if not isinstance(payload, dict): return ""
@@ -776,7 +798,9 @@ def error_history(data, selected):
         if text and active.get(name) != error_signature(text): items.append([name, text, int(time.time())])
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
-    return list(reversed([text for name, text, at in items if name in selected][-3:]))
+    ongoing = [text for text in current.values() if text]
+    previous = [text for name, text, at in items if name in selected and error_signature(text) != error_signature(current.get(name, ""))]
+    return ongoing + list(reversed(previous))[:max(0, 3 - len(ongoing))]
 def events_cache(provider): return CACHE / f"token-events-{provider}.jsonl.gz"
 def cached_lines(path):
     try:
