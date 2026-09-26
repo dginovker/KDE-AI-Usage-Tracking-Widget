@@ -11,11 +11,13 @@ COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED, FULL_USED = 80.0, 99.5
 NETWORK_ERRORS = (OSError, error.URLError, TimeoutError, json.JSONDecodeError)
 OPENAI_PRICES = {
+    "gpt-6-astra": (10.0, 1.0, 50.0), "gpt-6-sol": (2.0, 0.2, 10.0), "gpt-6-luna": (0.1, 0.01, 0.5),
     "gpt-5.6-sol": (5.0, 0.5, 30.0), "gpt-5.6-terra": (2.5, 0.25, 15.0), "gpt-5.6-luna": (1.0, 0.1, 6.0),
-    "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0), "gpt-6-astra": (10.0, 1.0, 50.0),
+    "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0),
     "gpt-5.4-mini": (0.75, 0.075, 4.5), "gpt-5.3-codex": (1.75, 0.175, 14.0),
 }
 CLAUDE_PRICES = {
+    "claude-opus-5-5": (4.0, 5.0, 8.0, 0.2, 20.0),
     **dict.fromkeys(("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5"), (5.0, 6.25, 10.0, 0.5, 25.0)),
     "claude-opus-4-1": (15.0, 18.75, 30.0, 1.5, 75.0), "claude-opus-4": (15.0, 18.75, 30.0, 1.5, 75.0),
     "claude-fable-5": (10.0, 12.5, 20.0, 1.0, 50.0), "claude-fable-5-1": (10.0, 12.5, 20.0, 0.25, 50.0),
