@@ -72,6 +72,10 @@ ColumnLayout {
         visible: Boolean(root.provider.observed_reset)
         text: root.provider.observed_reset || ""; opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
     }
+    PlasmaComponents3.Label {
+        visible: Boolean(root.provider.banked)
+        text: i18n("Banked: %1", root.provider.banked || ""); opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
+    }
     ColumnLayout {
         visible: Boolean(root.provider.account || root.resets.next || root.resets.banked || root.resets.error)
         spacing: Kirigami.Units.smallSpacing; Layout.fillWidth: true; Layout.topMargin: Kirigami.Units.largeSpacing

@@ -591,16 +591,33 @@ def claude_scoped(payload):
         if not name or percent is None: raise RuntimeError("scoped weekly limit is incomplete")
         rows.append({"title": name, "data": quota({"used_percent": percent, "resets_at": item.get("resets_at")}, 10080)})
     return rows
+def claude_banked(payload):
+    program = payload.get("cedar_ember")
+    if program is None: return "unavailable"
+    if not isinstance(program, dict) or not isinstance(program.get("grants"), list):
+        raise RuntimeError("saved reset response missing grants")
+    if program.get("ineligible_reason") == "surface": raise RuntimeError("saved reset lookup rejected client surface")
+    count, expiries = 0, []
+    for grant in program["grants"]:
+        remaining = grant.get("resets_left")
+        if type(remaining) is not int or remaining < 0: raise RuntimeError("saved reset count invalid")
+        expiry = moment(grant.get("ends_at"))
+        if grant.get("ends_at") is not None and expiry is None: raise RuntimeError("saved reset expiry invalid")
+        if not remaining or (expiry and expiry <= now()): continue
+        count += remaining
+        if expiry: expiries.append(expiry.timestamp())
+    return f"{count} | expires {short_time(min(expiries))}" if expiries else str(count)
 def claude():
     home = claude_home()
     try:
         token = claude_token(home)
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "KDE-AI-Usage-Widget/1"}
-        try: payload = http(CLAUDE_API_URL + "/api/oauth/usage", headers, timeout=5)
+        # Reset grants require Claude Code surface identification as well as the query flag.
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-cli/2.1.283 (external, cli) KDE-AI-Usage-Widget/1"}
+        try: payload = http(CLAUDE_API_URL + "/api/oauth/usage?cedar_ember=1", headers, timeout=5)
         except error.HTTPError as exc:
             if exc.code != 401: raise
             headers["Authorization"] = f"Bearer {claude_token(home, token)}"
-            payload = http(CLAUDE_API_URL + "/api/oauth/usage", headers, timeout=5)
+            payload = http(CLAUDE_API_URL + "/api/oauth/usage?cedar_ember=1", headers, timeout=5)
     except RuntimeError as exc: return blank_provider({"error": notice("Claude", str(exc))})
     except NETWORK_ERRORS as exc: return blank_provider({"error": failure("Claude", exc)})
     limits = {key: payload.get(key) for key in ("five_hour", "seven_day")}
@@ -608,6 +625,8 @@ def claude():
     problems = [f"{' and '.join(missing)} window missing"] if (missing := [label for key, label in (("five_hour", "5h"), ("seven_day", "weekly")) if not isinstance(limits[key], dict)]) else []
     try: scoped = claude_scoped(payload)
     except RuntimeError as exc: scoped, problems = [], problems + [str(exc)]
+    try: data["banked"] = claude_banked(payload)
+    except (RuntimeError, AttributeError) as exc: problems.append(str(exc))
     if scoped: data["rows"] = [{"title": "5h", "data": data["current"]}, {"title": "Week", "data": data["weekly"]}] + scoped
     if problems: data["error"] = notice("Claude", "; ".join(problems))
     account = load(Path.home() / ".claude.json").get("oauthAccount")
@@ -897,7 +916,7 @@ def scan_token_usage(names=PROVIDERS):
     result["scan"] = report
     return result
 def summarize_tokens(providers):
-    rows, unpriced = [], set()
+    rows = []
     for key, _ in TOKEN_WINDOWS:
         row = {"key": key, "providers": {}}
         for provider, windows in providers.items():
@@ -908,15 +927,13 @@ def summarize_tokens(providers):
                 estimate = model_cost(provider, model, values)
                 if estimate is None:
                     uncosted += values["tokens"] - values.get("uncosted", 0)
-                    if values["tokens"] > 0: unpriced.add(model)
                 else: cost += estimate
                 if values["tokens"] > 0: models.append((model, estimate, bool(values.get("uncosted"))))
             models.sort(key=lambda item: (item[1] is None, -(item[1] or 0), item[0]))
             suffix = "+" if uncosted else ""
             row["providers"][provider] = {"tokens": compact(total), "cost": money(cost) + suffix, "models": [{"name": model, "cost": "Price unknown" if estimate is None else money(estimate) + ("+" if partial else "")} for model, estimate, partial in models], "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else ""}
         rows.append(row)
-    note = "API price unavailable: " + ", ".join(sorted(unpriced)) if unpriced else ""
-    return {"windows": rows, "note": note}
+    return {"windows": rows}
 def refresh_tokens():
     CACHE.mkdir(parents=True, exist_ok=True)
     with (CACHE / "token-stats.lock").open("w") as lock:

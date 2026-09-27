@@ -146,10 +146,6 @@ PlasmoidItem {
                 text: root.provider("claude").error || i18n("Claude usage unavailable: no quota data returned.")
                 opacity: 0.7; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
-            PlasmaComponents3.Label {
-                visible: Boolean((root.snapshot.tokens || {}).note); text: (root.snapshot.tokens || {}).note || ""
-                opacity: 0.68; wrapMode: Text.WordWrap; Layout.fillWidth: true
-            }
             Item { Layout.fillHeight: true }
             PlasmaComponents3.Label {
                 visible: text.length > 0; text: root.errors(); color: "#fdbc4b"
