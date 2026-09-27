@@ -15,13 +15,12 @@ class ResetInfoTests(unittest.TestCase):
         self.forecast = {'updated_at': self.now.isoformat(), 'official_signal': {
             'at': (self.now - dt.timedelta(hours=1)).isoformat(), 'url': 'https://example.com/announcement'}}
 
-    def result(self, history=None):
+    def result(self):
         def http(url, *args):
-            if url.endswith('forecast'):
-                if isinstance(self.forecast, Exception):
-                    raise self.forecast
-                return self.forecast
-            return {'events': []} if history is None else history
+            self.assertTrue(url.endswith('forecast'))
+            if isinstance(self.forecast, Exception):
+                raise self.forecast
+            return self.forecast
         with patch.object(snapshot, 'http', side_effect=http), patch.object(snapshot, 'now', return_value=self.now):
             return snapshot.reset_info()
 
@@ -54,10 +53,6 @@ class ResetInfoTests(unittest.TestCase):
         self.forecast['last_reset_at'] = self.now.isoformat()
         self.assertEqual(self.result()['alert_until'], 0)
 
-    def test_invalid_history_does_not_hide_announcement(self):
-        data = self.result({'events': None})
-        self.assertIn('history_error', data)
-        self.assertGreater(data['alert_until'], self.now.timestamp())
 
 
 if __name__ == '__main__':

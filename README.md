@@ -8,8 +8,8 @@ Codex's center number turns light cyan while a fresh reset announcement is activ
 Local weekly quota reset tracking starts after installation and records a reset when
 usage drops and the weekly reset deadline advances by more than a minute. The widget
 shows the interval between the two successful API readings, normally about ten minutes
-apart. Sleep and failed requests widen that interval; resets with no observed usage
-drop can be missed. “Early” means the change was observed before the previous deadline;
+apart, under “Last reset.” Sleep and failed requests widen that interval; resets with no observed usage
+drop can be missed. In the saved history, “early” means the change was observed before the previous deadline;
 “scheduled window” means the observation interval includes that deadline, so the cause
 is still uncertain. Neither identifies a global reset versus a banked reset redemption.
 Account-separated observations and reset events are saved in

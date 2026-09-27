@@ -24,7 +24,8 @@ class ResetTrackingTests(unittest.TestCase):
     def test_early_reset_records_interval_and_evidence_once(self):
         self.observe(1000, 62, 5000)
         result = self.observe(1600, 2, 600000)
-        self.assertIn('(early)', result)
+        self.assertTrue(result.startswith('Last reset: '))
+        self.assertEqual(self.events()[0]['kind'], 'early')
         event = self.events()[0]
         self.assertEqual((event['after'], event['by']), (1000, 1600))
         self.assertEqual((event['used_before'], event['used_after']), (62, 2))

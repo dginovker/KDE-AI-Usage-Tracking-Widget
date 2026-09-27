@@ -73,18 +73,17 @@ ColumnLayout {
         text: root.provider.observed_reset || ""; opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
     }
     ColumnLayout {
-        visible: Boolean(root.provider.account || root.resets.past || root.resets.next || root.resets.banked || root.resets.error || root.resets.history_error)
+        visible: Boolean(root.provider.account || root.resets.next || root.resets.banked || root.resets.error)
         spacing: Kirigami.Units.smallSpacing; Layout.fillWidth: true; Layout.topMargin: Kirigami.Units.largeSpacing
         PlasmaComponents3.Label {
             visible: Boolean(root.provider.account); text: i18n("Account: %1", root.provider.account || "")
             opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
         Repeater {
-            model: ["past", "next", "banked"]
+            model: ["next", "banked"]
             PlasmaComponents3.Label {
                 visible: Boolean(root.resets[modelData]) && (modelData !== "next" || !resetIndicator.unavailable)
-                text: modelData === "past" ? i18n("Announcements: %1", root.resets.past || "")
-                    : modelData === "next" ? resetIndicator.message
+                text: modelData === "next" ? resetIndicator.message
                     : i18n("Banked: %1", root.resets.banked || "")
                 opacity: 0.72; wrapMode: Text.WordWrap; Layout.fillWidth: true
             }
@@ -92,10 +91,6 @@ ColumnLayout {
         PlasmaComponents3.Label {
             visible: resetIndicator.unavailable
             text: resetIndicator.message; color: "#fdbc4b"; wrapMode: Text.WordWrap; Layout.fillWidth: true
-        }
-        PlasmaComponents3.Label {
-            visible: Boolean(root.resets.history_error)
-            text: root.resets.history_error || ""; color: "#fdbc4b"; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
     }
 }

@@ -358,18 +358,8 @@ def short_time(value):
 def reset_info():
     headers = {"Accept": "application/json", "User-Agent": "KDE-AI-Usage-Widget/1"}
     result = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        timeline = pool.submit(http, RESET_API + "timeline?group=reset", headers, None, 3)
-        prediction = pool.submit(http, RESET_API + "forecast", headers, None, 3)
     try:
-        events = timeline.result().get("events")
-        if not isinstance(events, list): raise ValueError("missing events list")
-        labels = [short_time(item.get("announced_at")) for item in events if isinstance(item, dict)][:3]
-        if labels: result["past"] = " | ".join(filter(None, labels))
-    except (*NETWORK_ERRORS, ValueError, TypeError, AttributeError) as exc:
-        result["history_error"] = f"Announcement history unavailable: {exc}"
-    try:
-        forecast = prediction.result()
+        forecast = http(RESET_API + "forecast", headers, None, 3)
         updated = moment(forecast.get("updated_at"))
         if not updated or abs((now() - updated).total_seconds()) > 7200:
             raise ValueError("forecast timestamp missing or older than 2 hours")
@@ -508,9 +498,10 @@ def track_codex_reset(account, weekly, observed_at):
                                     "previous_reset": previous["reset"], "next_reset": sample["reset"]})
         state["previous"] = sample
         save(RESET_HISTORY, history, 0o600)
-        if not state["events"]: return "Tracking quota resets — no reset observed yet"
+        if not state["events"]: return ""
         event = state["events"][-1]
-        return f"Quota reset observed ({event['kind']}): {short_time(event['after'])} – {short_time(event['by'])}"
+        end = moment(event["by"]).strftime("%H:%M") if moment(event["after"]).date() == moment(event["by"]).date() else short_time(event["by"])
+        return f"Last reset: {short_time(event['after'])}–{end}"
 def codex_usage():
     home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     auth = load(home / "auth.json"); tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
@@ -915,15 +906,16 @@ def summarize_tokens(providers):
                 total += values["tokens"]
                 uncosted += values.get("uncosted", 0)
                 estimate = model_cost(provider, model, values)
-                if estimate is None and values["tokens"] > values.get("uncosted", 0): unpriced.add(model)
-                elif estimate is not None:
-                    cost += estimate
-                    if values["tokens"] > 0: models.append((model, estimate, bool(values.get("uncosted"))))
-            models.sort(key=lambda item: (-item[1], item[0]))
+                if estimate is None:
+                    uncosted += values["tokens"] - values.get("uncosted", 0)
+                    if values["tokens"] > 0: unpriced.add(model)
+                else: cost += estimate
+                if values["tokens"] > 0: models.append((model, estimate, bool(values.get("uncosted"))))
+            models.sort(key=lambda item: (item[1] is None, -(item[1] or 0), item[0]))
             suffix = "+" if uncosted else ""
-            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost) + suffix, "models": [{"name": model, "cost": money(estimate) + ("+" if partial else "")} for model, estimate, partial in models], "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else ""}
+            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost) + suffix, "models": [{"name": model, "cost": "Price unknown" if estimate is None else money(estimate) + ("+" if partial else "")} for model, estimate, partial in models], "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else ""}
         rows.append(row)
-    note = "Unpriced models excluded from cost: " + ", ".join(sorted(unpriced)) if unpriced else ""
+    note = "API price unavailable: " + ", ".join(sorted(unpriced)) if unpriced else ""
     return {"windows": rows, "note": note}
 def refresh_tokens():
     CACHE.mkdir(parents=True, exist_ok=True)
