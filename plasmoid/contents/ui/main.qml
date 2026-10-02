@@ -14,7 +14,7 @@ PlasmoidItem {
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
     property var snapshot: ({}); property bool loading: false; property string lastError: ""; property string lastUpdated: ""
-    property string refreshStarted: ""
+    property double refreshStarted: 0; property double clock: 0
     Plasmoid.title: i18n("AI Usage Rings"); Plasmoid.icon: "utilities-system-monitor"
     Plasmoid.status: PlasmaCore.Types.ActiveStatus; Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
     toolTipMainText: i18n("AI Usage")
@@ -63,7 +63,7 @@ PlasmoidItem {
                     HoverHandler { id: refreshHover }
                     PlasmaComponents3.ToolTip {
                         visible: refreshHover.hovered; delay: Kirigami.Units.toolTipDelay
-                        text: root.loading ? i18n("Refreshing usage since %1...", root.refreshStarted)
+                        text: root.loading ? i18n("Refreshing usage for %1...", root.stopwatch(root.clock - root.refreshStarted))
                             : root.lastError ? i18n("Refresh failed: %1. Click to retry.", root.lastError)
                             : root.lastUpdated ? i18n("Updated %1. Click to refresh.", root.lastUpdated)
                             : i18n("Click to refresh usage.")
@@ -165,13 +165,18 @@ PlasmoidItem {
         }
     }
     Timer { interval: root.refreshMs; running: true; repeat: true; onTriggered: root.refreshData() }
+    Timer { interval: 1000; running: root.loading; repeat: true; onTriggered: root.clock = Date.now() }
     Component.onCompleted: refreshData()
     function quote(value) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
     function refreshData() {
         if (loading) return;
         activeSource = "python3 " + quote(helperPath) + " --providers=" + quote(providers.join(",")) + " --stamp " + Date.now();
-        refreshStarted = Qt.formatTime(new Date(), "HH:mm:ss");
+        refreshStarted = clock = Date.now();
         loading = true; executable.connectSource(activeSource);
+    }
+    function stopwatch(ms) {
+        const seconds = Math.floor(ms / 1000);
+        return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
     }
     function provider(name) { return snapshot && typeof snapshot === "object" ? snapshot[name] || {} : {}; }
     function quota(name, key) { return provider(name)[key] || {}; }

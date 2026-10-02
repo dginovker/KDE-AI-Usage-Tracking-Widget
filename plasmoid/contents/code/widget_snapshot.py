@@ -402,22 +402,24 @@ def banked(payload):
 def codex_windows(limits):
     values = limits.values() if isinstance(limits, dict) else limits or []
     return {str(minutes): item for item in values if isinstance(item, dict) and (minutes := round(number(item.get("windowDurationMins", item.get("window_minutes"))) or 0))}
-def codex_attempt(binary, deadline):
+def codex_attempt(binary, deadline, known_credits):
     started, process, stage, result, issue = time.monotonic(), None, "start", None, None
     stderr = tempfile.TemporaryFile(mode="w+t")
+    def call(payload, limit):
+        left = deadline - time.monotonic()
+        if left <= 0: raise TimeoutError("lookup budget exhausted")
+        if (value := rpc(process, payload, min(limit, left))) is None: raise RuntimeError(f"empty {payload['method']} response")
+        return value
     try:
         process = subprocess.Popen([binary, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1)
         stage = "initialize"
-        left = deadline - time.monotonic()
-        if left <= 0: raise TimeoutError("lookup budget exhausted")
-        initialized = rpc(process, {"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}}, min(2, left))
-        if initialized is None or not process.stdin: raise RuntimeError("empty initialize response")
+        call({"method": "initialize", "id": 1, "params": {"clientInfo": {"name": "kde_ai_usage", "title": "KDE AI Usage", "version": "1"}}}, 2)
         process.stdin.write('{"method":"initialized"}\n'); process.stdin.flush()
         stage = "rate limits"
-        left = deadline - time.monotonic()
-        if left <= 0: raise TimeoutError("lookup budget exhausted")
-        result = rpc(process, {"method": "account/rateLimits/read", "id": 2}, min(6, left))
-        if result is None: raise RuntimeError("empty response")
+        result = call({"method": "account/rateLimits/read", "id": 2, "params": {"excludeResetCreditDetails": True}}, 6)
+        # Banked expiry dates need a second, slower backend lookup, so they are refetched only when the banked count moves.
+        if dig(result, "rateLimitResetCredits", "availableCount") == dig(known_credits, "availableCount"): result["rateLimitResetCredits"] = known_credits
+        else: stage = "reset credits"; result = call({"method": "account/rateLimits/read", "id": 3}, 6)
     except (BrokenPipeError, OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc:
         issue = {"stage": stage, "timeout": isinstance(exc, TimeoutError), "message": str(exc)}
     finally:
@@ -510,7 +512,7 @@ def codex_usage():
     binary = os.environ.get("CODEX_BIN") or shutil.which("codex") or str(Path.home() / ".local/bin/codex")
     started, issues, windows, credits = time.monotonic(), [], None, None
     for attempt in range(2):
-        result, issue = codex_attempt(binary, min(started + 14, time.monotonic() + 7))
+        result, issue = codex_attempt(binary, min(started + 14, time.monotonic() + 7), cached.get("credits"))
         if not issue:
             windows = codex_windows(result.get("rateLimits"))
             weekly = quota(windows.get("10080"), 10080)
