@@ -2,6 +2,13 @@
 
 Taskbar widget visual to help maximize your AI subscription usage :)
 
+The title refreshes every five seconds with working/idle counts for main Pi agents
+attached directly to Konsole. It uses the local `pi-intercom` live roster and Linux
+process ancestry; subagents, headless agents, orphaned processes, and non-Konsole
+sessions are excluded. Agents waiting in `ask_user` or `ask_user_question` count as
+idle. A failed status lookup displays “agent counts unavailable” with the error,
+not zero or stale counts. Pi sessions need `pi-intercom` enabled to appear.
+
 <img width="893" height="697" alt="image" src="https://github.com/user-attachments/assets/cf362d17-ac09-420f-bcfc-4d21e4a9bf6c" />
 
 Codex's center number turns light cyan while a fresh reset announcement is active.

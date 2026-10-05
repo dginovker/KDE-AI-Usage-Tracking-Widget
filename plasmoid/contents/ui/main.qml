@@ -10,14 +10,19 @@ PlasmoidItem {
     id: root
     readonly property int refreshMs: 10 * 60 * 1000
     readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_snapshot.py").toString().replace("file://", ""))
+    readonly property string agentsHelperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_agents.py").toString().replace("file://", ""))
+    property var agents: null; property string agentsError: ""; property string agentsSource: ""
+    readonly property string usageTitle: agentsError ? i18n("AI Usage - agent counts unavailable")
+        : agents ? i18n("AI Usage - %1 agents working - %2 agents idle", agents.working, agents.idle)
+        : i18n("AI Usage - agent counts loading")
     readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi, Plasmoid.configuration.showGrok, Plasmoid.configuration.showAgy)
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
     property var snapshot: ({}); property bool loading: false; property string lastError: ""; property string lastUpdated: ""
     property double refreshStarted: 0; property double clock: 0
-    Plasmoid.title: i18n("AI Usage Rings"); Plasmoid.icon: "utilities-system-monitor"
+    Plasmoid.title: root.usageTitle; Plasmoid.icon: "utilities-system-monitor"
     Plasmoid.status: PlasmaCore.Types.ActiveStatus; Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
-    toolTipMainText: i18n("AI Usage")
+    toolTipMainText: root.usageTitle
     compactRepresentation: Item {
         id: compact
         Layout.minimumWidth: Kirigami.Units.iconSizes.medium * root.providers.length + Kirigami.Units.smallSpacing * Math.max(0, root.providers.length - 1)
@@ -51,7 +56,7 @@ PlasmoidItem {
             anchors.fill: parent; anchors.margins: Kirigami.Units.largeSpacing; spacing: Kirigami.Units.smallSpacing
             RowLayout {
                 Layout.fillWidth: true
-                PlasmaComponents3.Label { text: i18n("AI Usage"); font.bold: true; Layout.fillWidth: true }
+                PlasmaComponents3.Label { text: root.usageTitle; font.bold: true; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 Item {
                     Layout.preferredWidth: refreshButton.implicitWidth; Layout.preferredHeight: refreshButton.implicitHeight
                     PlasmaComponents3.ToolButton {
@@ -164,9 +169,31 @@ PlasmoidItem {
             catch (error) { root.lastError = i18n("Could not parse usage helper output."); }
         }
     }
+    P5Support.DataSource {
+        id: agentsExecutable; engine: "executable"
+        onNewData: function(sourceName, data) {
+            if (sourceName !== root.agentsSource) return;
+            disconnectSource(sourceName); root.agentsSource = "";
+            try {
+                const counts = JSON.parse(data.stdout || "");
+                if (counts.error) throw new Error(counts.error);
+                if (data["exit code"] !== 0 || !Number.isInteger(counts.working) || counts.working < 0
+                    || !Number.isInteger(counts.idle) || counts.idle < 0) throw new Error("Invalid Pi agent counts");
+                root.agents = counts; root.agentsError = "";
+            } catch (error) {
+                root.agents = null; root.agentsError = String(error);
+            }
+        }
+    }
+    Timer { interval: 5000; running: true; repeat: true; onTriggered: root.refreshAgents() }
     Timer { interval: root.refreshMs; running: true; repeat: true; onTriggered: root.refreshData() }
     Timer { interval: 1000; running: root.loading; repeat: true; onTriggered: root.clock = Date.now() }
-    Component.onCompleted: refreshData()
+    Component.onCompleted: { refreshData(); refreshAgents(); }
+    function refreshAgents() {
+        if (agentsSource) return;
+        agentsSource = "python3 " + quote(agentsHelperPath) + " --stamp " + Date.now();
+        agentsExecutable.connectSource(agentsSource);
+    }
     function quote(value) { return "'" + value.replace(/'/g, "'\\''") + "'"; }
     function refreshData() {
         if (loading) return;
@@ -185,6 +212,7 @@ PlasmoidItem {
     function errors() {
         const values = (snapshot.errors || []).slice();
         if (lastError) values.push(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
+        if (agentsError) values.push(agentsError);
         return values.join("\n");
     }
     function providerList(claude, codex, kimi, grok, agy) {
