@@ -2,12 +2,22 @@
 
 Taskbar widget visual to help maximize your AI subscription usage :)
 
-The title refreshes every five seconds with working/idle counts for main Pi agents
-attached directly to Konsole. It uses the local `pi-intercom` live roster and Linux
-process ancestry; subagents, headless agents, orphaned processes, and non-Konsole
-sessions are excluded. Agents waiting in `ask_user` or `ask_user_question` count as
-idle. A failed status lookup displays “agent counts unavailable” with the error,
-not zero or stale counts. Pi sessions need `pi-intercom` enabled to appear.
+The title refreshes every five seconds with working/idle counts for main Pi,
+Claude Code, and Codex CLI agents attached to Konsole. Linux process ancestry
+excludes subagents, headless agents, orphaned processes, and non-Konsole sessions.
+Waiting for user input or permission counts as idle. Failed or missing state
+shows “agent counts unavailable” with the error, not zero or stale counts.
+
+Pi requires `pi-intercom`. Claude Code uses its native `sessions/<pid>.json`
+presence files (including busy, idle, and waiting states). The installer adds
+metadata-only lifecycle hooks to `~/.codex/hooks.json`, preserving existing hooks
+and backing up the original before changes. **Approve the new AI Usage command
+in Codex `/hooks` and restart existing Codex sessions.** The hook stores only
+PID, process start time, session ID, event name, and working/idle state in
+`$XDG_CACHE_HOME/ai-usage/agents/codex` (normally `~/.cache/ai-usage/agents/codex`);
+it never stores prompts or tool arguments. Codex must run locally in Konsole:
+remote/daemon-owned hooks cannot identify the local terminal agent and produce
+an explicit missing-state error. No model or provider settings are changed.
 
 <img width="893" height="697" alt="image" src="https://github.com/user-attachments/assets/cf362d17-ac09-420f-bcfc-4d21e4a9bf6c" />
 

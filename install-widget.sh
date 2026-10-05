@@ -11,4 +11,6 @@ else
     kpackagetool6 --type Plasma/Applet --install plasmoid
 fi
 
+python3 "${XDG_DATA_HOME:-$HOME/.local/share}/plasma/plasmoids/local.aiusage.rings/contents/code/widget_agents.py" --install-codex-hooks
+
 echo "Installed AI Usage Rings as local.aiusage.rings"
