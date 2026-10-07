@@ -140,8 +140,9 @@ PlasmoidItem {
                             }
                         }
                         PlasmaComponents3.Label {
-                            visible: costPanel.expanded && Boolean(costPanel.totals.note)
-                            text: costPanel.totals.note || ""; opacity: 0.68
+                            visible: Boolean(costPanel.totals.note)
+                            text: costPanel.totals.note || ""; color: "#fdbc4b"
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                     }
                 }
@@ -213,6 +214,10 @@ PlasmoidItem {
         const values = (snapshot.errors || []).slice();
         if (lastError) values.push(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
         if (agentsError) values.push(agentsError);
+        for (let index = 0; index < providers.length; index++) {
+            const issue = cost(providers[index]).error;
+            if (issue) values.push(issue);
+        }
         return values.join("\n");
     }
     function providerList(claude, codex, kimi, grok, agy) {

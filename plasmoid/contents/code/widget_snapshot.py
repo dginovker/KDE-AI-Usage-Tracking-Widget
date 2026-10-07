@@ -11,7 +11,7 @@ COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
 TARGET_USED, FULL_USED = 80.0, 99.5
 NETWORK_ERRORS = (OSError, error.URLError, TimeoutError, json.JSONDecodeError)
 OPENAI_PRICES = {
-    "gpt-6-astra": (10.0, 1.0, 50.0), "gpt-6-sol": (2.0, 0.2, 10.0), "gpt-6-luna": (0.1, 0.01, 0.5),
+    "gpt-6-astra": (10.0, 1.0, 50.0), "gpt-6-sol": (2.0, 0.2, 10.0), "gpt-6.1-sol": (2.0, 0.1, 10.0), "gpt-6-luna": (0.1, 0.01, 0.5),
     "gpt-5.6-sol": (5.0, 0.5, 30.0), "gpt-5.6-terra": (2.5, 0.25, 15.0), "gpt-5.6-luna": (1.0, 0.1, 6.0),
     "gpt-5-codex": (1.25, 0.125, 10.0), "gpt-5.5": (10.0, 1.0, 45.0),
     "gpt-5.4-mini": (0.75, 0.075, 4.5), "gpt-5.3-codex": (1.75, 0.175, 14.0),
@@ -701,9 +701,11 @@ def codex_sources():
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
             models = {str(Path(path)): model or "unknown" for path, model in connection.execute("select rollout_path, model from threads") if path}
     except sqlite3.Error: pass
+    imports = home / "external_agent_session_imports.json"
+    imported_ids = {record["imported_thread_id"] for record in json.loads(imports.read_text())["records"]} if imports.exists() else set()
     root = home / "sessions"
-    # The sqlite-derived model rides in the cache signature, so relabelling a thread re-parses its rollout.
-    return [(path, models.get(str(path), "unknown")) for path in (root.rglob("*.jsonl") if root.exists() else [])]
+    # Imported Claude transcripts carry an import-time token total, not a new OpenAI request.
+    return [(path, models.get(str(path), "unknown")) for path in root.rglob("*.jsonl") if path.stem[-36:] not in imported_ids]
 def codex_events(path, model):
     previous = collections.Counter()
     for item in jsonl(path):
@@ -813,7 +815,44 @@ def agy_events(path, _):
                 reference, offset = protobuf_varint(packed, offset); references.append(reference)
             stamp = moment(max((timestamps.get(reference) or 0 for reference in references), default=0))
             if stamp is not None: yield [event.hex(), stamp.timestamp(), model, values]
+PI_PROVIDERS = {"openai": "codex", "openai-codex": "codex", "anthropic": "claude", "xai": "grok", "kimi-coding": "kimi", "google-antigravity": "agy"}
+def pi_sources():
+    home = Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent")).expanduser()
+    root = Path(os.environ.get("PI_CODING_AGENT_SESSION_DIR", str(home / "sessions"))).expanduser()
+    return list(root.rglob("*.jsonl"))
+def pi_events(path, provider):
+    entries = iter(jsonl(path))
+    header = next(entries, {})
+    if header.get("type") != "session": return
+    selected = {}
+    for item in entries:
+        kind = item.get("type")
+        if kind == "model_change": selected = {"provider": item["provider"], "model": item["modelId"]}
+        message = item.get("message") or {}
+        if kind == "message" and message.get("role") == "assistant": record = message
+        elif kind == "usage": record = item
+        elif kind in ("compaction", "branch_summary"): record = {**selected, **item}
+        else: continue
+        if PI_PROVIDERS.get(record.get("provider")) != provider: continue
+        usage = record.get("usage")
+        if not isinstance(usage, dict) or not usage.get("totalTokens"): continue
+        stamp = event_at(record)
+        if stamp is None: raise ValueError(f"Pi usage timestamp missing: {path}:{item.get('id')}")
+        tokens = int(usage["totalTokens"])
+        reported_cost = dig(usage, "cost", "total")
+        if number(reported_cost) is not None and reported_cost > 0:
+            values = {"tokens": tokens, "reported_tokens": tokens, "cost": reported_cost}
+        elif provider == "claude":
+            write1h = int(usage.get("cacheWrite1h", 0))
+            values = {"tokens": tokens, "input": int(usage["input"]), "output": int(usage["output"]), "read": int(usage["cacheRead"]), "write5": int(usage["cacheWrite"]) - write1h, "write1h": write1h, "write_unknown": 0}
+        else:
+            values = {"tokens": tokens, "input": int(usage["input"]), "output": int(usage["output"]), "cached": int(usage["cacheRead"])}
+            if provider in ("codex", "agy"): values["input"] += values["cached"]
+        # Forks copy entry IDs and timestamps; response IDs also match imported native Claude messages.
+        event_id = record.get("responseId") or f"pi:{item['id']}:{record['timestamp']}"
+        yield [event_id, stamp, record["model"], values]
 def model_cost(provider, model, values):
+    if values.get("reported_tokens") == values["tokens"]: return values["cost"]
     if provider == "grok": return number(values.get("cost")) if "cost" in values else None
     if provider == "agy":
         rates = AGY_PRICES.get(model)
@@ -821,18 +860,18 @@ def model_cost(provider, model, values):
     else: rates = {"codex": OPENAI_PRICES, "claude": CLAUDE_PRICES, "kimi": KIMI_PRICES}[provider].get(model)
     if not rates: return None
     if provider == "claude":
-        usage = (values["input"], values["write5"] + values["write_unknown"], values["write1h"], values["read"], values["output"])
+        usage = (values.get("input", 0), values.get("write5", 0) + values.get("write_unknown", 0), values.get("write1h", 0), values.get("read", 0), values.get("output", 0))
     elif provider in ("codex", "agy"):
-        usage = (max(0, values["input"] - values["cached"]), values["cached"], values["output"])
+        usage = (max(0, values.get("input", 0) - values.get("cached", 0)), values.get("cached", 0), values.get("output", 0))
     else:
-        usage = (values["input"], values["cached"], values["output"])
-    return sum(tokens * rate for tokens, rate in zip(usage, rates)) / 1_000_000
+        usage = (values.get("input", 0), values.get("cached", 0), values.get("output", 0))
+    return sum(tokens * rate for tokens, rate in zip(usage, rates)) / 1_000_000 + values.get("cost", 0)
 def compact(value):
     if value >= 1_000_000_000: return f"{value / 1_000_000_000:.2f}B"
     if value >= 1_000_000: return f"{value / 1_000_000:.1f}M"
     if value >= 1_000: return f"{value / 1_000:.1f}K"
     return str(value)
-def money(value): return f"${value:,.0f}"
+def money(value): return "<$0.01" if 0 < value < 0.01 else f"${value:,.2f}"
 def error_signature(text): return re.sub(r" \([\d.]+s\)(?:;.*)?$", "", text.split(" - ", 1)[-1])
 def log_lookups(data, selected):
     """Append one line per provider lookup (kept 7 days) and return each provider's 24h (failed, total) counts."""
@@ -898,7 +937,7 @@ def scan_provider(provider, sources, extract):
             # Streaming records a message id twice: mid-flight with a partial output count, then complete.
             # Keeping the largest total picks the finished copy and makes the result independent of read order.
             winner = best.get(event_id)
-            if winner is None or values["tokens"] > winner[2]["tokens"]: best[event_id] = (stamp, model, values)
+            if winner is None or (values["tokens"], values.get("reported_tokens", 0)) > (winner[2]["tokens"], winner[2].get("reported_tokens", 0)): best[event_id] = (stamp, model, values)
     cache = events_cache(provider)
     tmp = cache.with_suffix(".tmp")
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -924,11 +963,12 @@ def scan_provider(provider, sources, extract):
     return windows, stats
 def scan_token_usage(names=PROVIDERS):
     scanners = {"codex": (codex_sources, codex_events), "claude": (claude_sources, claude_events), "kimi": (kimi_sources, kimi_events), "grok": (grok_sources, grok_events), "agy": (agy_sources, agy_events)}
-    result, report = {}, []
+    result, report, pi_paths = {}, [], pi_sources()
     for provider in names:
         started = time.monotonic()
         sources, extract = scanners[provider]
-        windows, stats = scan_provider(provider, sources(), extract)
+        combined = sources() + [(path, ["pi", provider]) for path in pi_paths]
+        windows, stats = scan_provider(provider, combined, lambda path, extra: pi_events(path, provider) if extra == ["pi", provider] else extract(path, extra))
         stats["seconds"] = round(time.monotonic() - started, 2)
         result[provider] = {key: {model: dict(values) for model, values in windows[key].items()} for key, _ in TOKEN_WINDOWS}
         report.append(stats); print("token scan " + json.dumps(stats, separators=(",", ":")), file=sys.stderr)
@@ -939,18 +979,32 @@ def summarize_tokens(providers):
     for key, _ in TOKEN_WINDOWS:
         row = {"key": key, "providers": {}}
         for provider, windows in providers.items():
-            total, cost, uncosted, models = 0, 0.0, 0, []
+            total, cost, uncosted, models, problems = 0, 0.0, 0, [], []
             for model, values in windows[key].items():
-                total += values["tokens"]
-                uncosted += values.get("uncosted", 0)
+                tokens = values["tokens"]
+                total += tokens
+                if not tokens: continue
                 estimate = model_cost(provider, model, values)
+                missing = values.get("uncosted", 0)
+                # Codex can report total_tokens with zero billing counters; those tokens are not free.
+                if provider == "codex": missing = max(missing, tokens - values.get("reported_tokens", 0) - values.get("input", 0) - values.get("output", 0))
                 if estimate is None:
-                    uncosted += values["tokens"] - values.get("uncosted", 0)
-                else: cost += estimate
-                if values["tokens"] > 0: models.append((model, estimate, bool(values.get("uncosted"))))
+                    missing = tokens - values.get("reported_tokens", 0)
+                    if values.get("reported_tokens"): estimate = values["cost"]
+                    problems.append(f"{model}: pricing missing" if provider != "grok" else f"{model}: cost data missing")
+                elif missing:
+                    problems.append(f"{model}: input/output/cache breakdown missing for {compact(missing)} tokens" if provider == "codex" else f"{model}: cost data missing for {compact(missing)} tokens")
+                uncosted += missing
+                if estimate is not None: cost += estimate
+                label = "Price unknown" if estimate is None else "Unavailable" if missing == tokens else money(estimate) + ("+ (partial)" if missing else "")
+                models.append((model, estimate, label))
             models.sort(key=lambda item: (item[1] is None, -(item[1] or 0), item[0]))
-            suffix = "+" if uncosted else ""
-            row["providers"][provider] = {"tokens": compact(total), "cost": money(cost) + suffix, "models": [{"name": model, "cost": "Price unknown" if estimate is None else money(estimate) + ("+" if partial else "")} for model, estimate, partial in models], "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else ""}
+            row["providers"][provider] = {
+                "tokens": compact(total), "cost": "Unavailable" if total and uncosted == total else money(cost) + ("+ (partial)" if uncosted else ""),
+                "models": [{"name": model, "cost": label} for model, _, label in models],
+                "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else "",
+                "error": f"{provider.capitalize()} API equivalent ({key}): " + "; ".join(problems) if problems else "",
+            }
         rows.append(row)
     return {"windows": rows}
 def refresh_tokens():

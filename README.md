@@ -25,6 +25,13 @@ Codex's center number turns light cyan while a fresh reset announcement is activ
 Every usage lookup is logged per provider (with the full error text) to
 `~/.cache/ai-usage/lookup-log.jsonl` for 7 days; ongoing errors show the 24h failure count.
 
+API-equivalent costs include native client logs and Pi session usage, grouped by
+provider. Pi's recorded costs include cache warming and compaction; response/entry
+IDs prevent forks and imported Claude copies from being counted twice. Codex's
+external-import registry excludes replayed conversations from Codex usage entirely:
+importing a transcript is not a new API call. Missing pricing or billing counters
+appear in the bottom-right error area rather than as a zero-dollar estimate.
+
 Local weekly quota reset tracking starts after installation and records a reset when
 usage drops and the weekly reset deadline advances by more than a minute. The widget
 shows the interval between the two successful API readings, normally about ten minutes
