@@ -3,52 +3,41 @@ import json
 import os
 from pathlib import Path
 import shlex
-import socket
 import sys
 import time
+from urllib.request import ProxyHandler, build_opener
 
 
-def intercom_sessions():
-    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent")).expanduser()
-    deadline = time.monotonic() + 3
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(3)
-        connection.connect(str(agent_dir / "intercom/broker.sock"))
+PI_DASHBOARD_SESSIONS = "http://127.0.0.1:8040/api/sessions"
 
-        def send(message):
-            payload = json.dumps(message).encode()
-            connection.sendall(len(payload).to_bytes(4, "big") + payload)
 
-        def receive():
-            def exact(size):
-                data = bytearray()
-                while len(data) < size:
-                    connection.settimeout(max(0.001, deadline - time.monotonic()))
-                    chunk = connection.recv(size - len(data))
-                    if not chunk:
-                        raise RuntimeError("Intercom connection closed before responding")
-                    data.extend(chunk)
-                return data
-            size = int.from_bytes(exact(4), "big")
-            if not 0 < size <= 1024 * 1024:
-                raise ValueError(f"Invalid intercom frame size: {size}")
-            message = json.loads(exact(size))
-            if message.get("type") == "error":
-                raise RuntimeError(message["error"])
-            return message
-
-        stamp = int(time.time() * 1000)
-        # The broker requires registration even for a read-only roster request.
-        send({"type": "register", "session": {"name": "kde-ai-usage-observer", "cwd": str(Path.cwd()),
-              "model": "widget-observer", "pid": os.getpid(), "startedAt": stamp, "lastActivity": stamp, "status": "idle"}})
-        while receive().get("type") != "registered":
-            pass
-        send({"type": "list", "requestId": "agents"})
-        while True:
-            message = receive()
-            if message.get("type") == "sessions" and message.get("requestId") == "agents":
-                send({"type": "unregister"})
-                return message["sessions"]
+def pi_sessions(proc=Path("/proc")):
+    # The dashboard observes Pi lifecycle directly; an Intercom disconnect is not an idle agent.
+    with build_opener(ProxyHandler({})).open(PI_DASHBOARD_SESSIONS, timeout=3) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict) or payload.get("success") is not True or not isinstance(payload.get("data"), list):
+        raise ValueError("Invalid Pi dashboard sessions response")
+    result = []
+    for session in payload["data"]:
+        if not isinstance(session, dict):
+            raise ValueError("Invalid Pi dashboard session record")
+        pid = session.get("pid")
+        if session.get("status") == "ended" or type(pid) is not int or not konsole_agent(pid, proc):
+            continue
+        if (proc / str(pid) / "comm").read_text().strip() != "pi":
+            continue
+        status = session["status"]
+        if status not in ("active", "idle", "streaming"):
+            raise ValueError(f"Unknown Pi dashboard status for PID {pid}: {status!r}")
+        if session.get("dataUnavailable") is not False:
+            raise ValueError(f"Pi dashboard live data unavailable for PID {pid}")
+        compacting = session.get("compacting", False)
+        if type(compacting) is not bool:
+            raise ValueError(f"Invalid Pi compaction state for PID {pid}")
+        question = session.get("currentTool") in ("ask_user", "ask_user_question")
+        working = compacting or (status == "streaming" and not question)
+        result.append({"pid": pid, "id": session["id"], "status": "working" if working else "idle"})
+    return result
 
 
 PROVIDERS = ("pi", "claude", "codex")
@@ -142,7 +131,7 @@ def snapshot(proc=Path("/proc")):
     try:
         candidates = {int(path.name): (path / "comm").read_text().strip()
                       for path in proc.glob("[0-9]*") if konsole_agent(int(path.name), proc)}
-        sessions = intercom_sessions() if "pi" in candidates.values() else []
+        sessions = pi_sessions(proc) if "pi" in candidates.values() else []
         if "claude" in candidates.values():
             home = Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
             sessions += native_sessions(home / "sessions", "claude", proc)
@@ -152,7 +141,7 @@ def snapshot(proc=Path("/proc")):
         for pid, provider in candidates.items():
             if not any(session["pid"] == pid for session in live):
                 detail = {"codex": "approve the AI Usage hook in /hooks and restart the session",
-                          "pi": "live presence missing; run /reload in this Pi session to reconnect pi-intercom",
+                          "pi": f"live presence missing from Pi dashboard at {PI_DASHBOARD_SESSIONS}",
                           "claude": "live presence missing"}[provider]
                 raise RuntimeError(f"{provider} PID {pid}: {detail}")
         return count_agents(live, proc)

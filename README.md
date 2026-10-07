@@ -8,8 +8,12 @@ excludes subagents, headless agents, orphaned processes, and non-Konsole session
 Waiting for user input or permission counts as idle. Failed or missing state
 shows “agent counts unavailable” with the error, not zero or stale counts.
 
-Pi requires `pi-intercom`. Claude Code uses its native `sessions/<pid>.json`
-presence files (including busy, idle, and waiting states). The installer adds
+Pi counts use the existing local Pi Dashboard at `http://127.0.0.1:8040/api/sessions`,
+not Intercom membership: a messaging disconnect must not erase a running agent.
+Streaming and compaction count as working; user-question tools count as idle.
+Dashboard failures or missing live state remain explicit errors. Claude Code uses
+its native `sessions/<pid>.json` presence files (including busy, idle, and waiting
+states). The installer adds
 metadata-only lifecycle hooks to `~/.codex/hooks.json`, preserving existing hooks
 and backing up the original before changes. **Approve the new AI Usage command
 in Codex `/hooks` and restart existing Codex sessions.** The hook stores only

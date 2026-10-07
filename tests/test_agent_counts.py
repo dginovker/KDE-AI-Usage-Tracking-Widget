@@ -1,8 +1,9 @@
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
-import socket
 import tempfile
 import threading
 import unittest
@@ -75,16 +76,15 @@ class AgentCountsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown agent status"):
                 agents.count_agents([self.session(status=status)], self.proc)
 
-    def test_broker_failure_does_not_invent_zero_counts(self):
-        with patch.object(agents, "intercom_sessions", side_effect=OSError("broker unavailable")):
-            self.assertEqual(agents.snapshot(self.proc), {"error": "Agent counts unavailable: broker unavailable"})
+    def test_dashboard_failure_does_not_invent_zero_counts(self):
+        with patch.object(agents, "pi_sessions", side_effect=OSError("dashboard unavailable")):
+            self.assertEqual(agents.snapshot(self.proc), {"error": "Agent counts unavailable: dashboard unavailable"})
 
-    def test_missing_pi_presence_names_the_session_and_recovery_action(self):
-        with patch.object(agents, 'intercom_sessions', return_value=[]):
+    def test_missing_pi_presence_names_the_session_and_source(self):
+        with patch.object(agents, 'pi_sessions', return_value=[]):
             error = agents.snapshot(self.proc)['error']
             self.assertIn('pi PID 30: live presence missing', error)
-            self.assertIn('run /reload in this Pi session', error)
-            self.assertIn('pi-intercom', error)
+            self.assertIn(agents.PI_DASHBOARD_SESSIONS, error)
 
     def test_native_claude_busy_idle_waiting_and_shell_states(self):
         self.process(31, 20, "claude")
@@ -154,13 +154,13 @@ class AgentCountsTests(unittest.TestCase):
         (claude_home / "sessions").mkdir(parents=True)
         (claude_home / "sessions/31.json").write_text(json.dumps({"pid": 31, "sessionId": "claude-test", "kind": "interactive", "status": "waiting", "procStart": "3100"}))
         state_dir = self.proc / "codex-state"
-        with patch.object(agents, "codex_state_dir", return_value=state_dir), patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(claude_home)}), patch.object(agents, "intercom_sessions", return_value=[self.session()]):
+        with patch.object(agents, "codex_state_dir", return_value=state_dir), patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(claude_home)}), patch.object(agents, "pi_sessions", return_value=[self.session()]):
             agents.codex_hook({"hook_event_name": "UserPromptSubmit", "session_id": "codex-test"}, self.proc, 32)
             self.assertEqual(agents.snapshot(self.proc), {"working": 2, "idle": 1})
 
     def test_missing_native_state_is_explicit_not_idle(self):
         self.process(31, 20, "codex")
-        with patch.object(agents, "codex_state_dir", return_value=self.proc / "absent"), patch.object(agents, "intercom_sessions", return_value=[self.session()]):
+        with patch.object(agents, "codex_state_dir", return_value=self.proc / "absent"), patch.object(agents, "pi_sessions", return_value=[self.session()]):
             self.assertIn("approve the AI Usage hook", agents.snapshot(self.proc)["error"])
 
     def test_install_preserves_existing_hooks_and_is_idempotent(self):
@@ -182,51 +182,68 @@ class AgentCountsTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(json.loads(backups[0].read_text()), original)
 
-    def test_socket_protocol_handles_fragmented_frames_and_presence_events(self):
-        runtime = self.proc / "intercom"
-        runtime.mkdir()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-            server.bind(str(runtime / "broker.sock"))
-            server.listen()
-            received = []
-            failures = []
+    def dashboard_snapshot(self, payload):
+        with patch.object(agents, 'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            return agents.snapshot(self.proc)
 
-            def serve():
-                try:
-                    with server.accept()[0] as client:
-                        client.settimeout(3)
-                        reader = client.makefile("rb")
+    def test_dashboard_lifecycle_questions_and_compaction(self):
+        for status, tool, compacting, working in (
+            ('active', None, False, 0), ('idle', None, False, 0),
+            ('streaming', None, False, 1), ('streaming', 'bash', False, 1),
+            ('streaming', 'ask_user', False, 0), ('streaming', 'ask_user_question', False, 0),
+            ('idle', None, True, 1), ('streaming', 'ask_user', True, 1),
+        ):
+            with self.subTest(status=status, tool=tool, compacting=compacting):
+                row = {**self.session(status=status), 'currentTool': tool, 'compacting': compacting, 'dataUnavailable': False}
+                self.assertEqual(self.dashboard_snapshot({'success': True, 'data': [row]}), {'working': working, 'idle': 1 - working})
 
-                        def read():
-                            value = json.loads(reader.read(int.from_bytes(reader.read(4), "big")))
-                            received.append(value)
-                            return value
+    def test_dashboard_invalid_unavailable_and_ended_state_fails_visibly(self):
+        row = {**self.session(status='streaming'), 'dataUnavailable': False}
+        for payload in (
+            [], {'success': False, 'data': []}, {'success': True, 'data': {}},
+            {'success': True, 'data': [None]},
+            *({'success': True, 'data': [{**row, **changes}]} for changes in (
+                {'status': 'unknown'}, {'status': 'ended'}, {'dataUnavailable': True},
+                {'dataUnavailable': None}, {'compacting': 'true'},
+            )),
+        ):
+            with self.subTest(payload=payload):
+                self.assertIn('Agent counts unavailable', self.dashboard_snapshot(payload)['error'])
 
-                        def send(value):
-                            payload = json.dumps(value).encode()
-                            frame = len(payload).to_bytes(4, "big") + payload
-                            for byte in frame:
-                                client.sendall(bytes([byte]))
+    def test_dashboard_read_only_http_counts_agents_without_intercom(self):
+        self.process(31, 20, 'pi')
+        self.process(32, 20, 'pi', env=b'PI_SUBAGENT_RUN_ID=worker\\0')
+        self.process(33, 20, 'claude')
+        rows = [{**self.session(pid, status), 'dataUnavailable': False} for pid, status in (
+            (30, 'streaming'), (31, 'idle'), (32, 'streaming'), (33, 'unknown'), (999, 'streaming'),
+        )]
+        requests = []
 
-                        read()
-                        send({"type": "registered", "sessionId": "observer"})
-                        read()
-                        send({"type": "presence_update"})
-                        send({"type": "sessions", "requestId": "agents", "sessions": [self.session()]})
-                        read()
-                except Exception as exc:
-                    failures.append(exc)
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append((self.command, self.path))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({'success': True, 'data': rows}).encode())
 
-            thread = threading.Thread(target=serve)
+            def log_message(self, *args):
+                pass
+
+        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever)
             thread.start()
             try:
-                with patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(self.proc)}):
-                    self.assertEqual(agents.intercom_sessions(), [self.session()])
+                url = f'http://127.0.0.1:{server.server_port}/api/sessions'
+                with patch.object(agents, 'PI_DASHBOARD_SESSIONS', url), patch.dict(os.environ, {'http_proxy': 'http://127.0.0.1:1'}):
+                    records = agents.pi_sessions(self.proc)
+                    self.assertEqual(agents.count_agents(records, self.proc), {'working': 1, 'idle': 1})
+                    self.assertEqual({r['pid'] for r in records}, {30, 31})
             finally:
+                server.shutdown()
                 thread.join(timeout=5)
-            self.assertFalse(thread.is_alive())
-            self.assertEqual(failures, [])
-            self.assertEqual([message["type"] for message in received], ["register", "list", "unregister"])
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(requests, [('GET', '/api/sessions')])
 
 
 if __name__ == "__main__":
