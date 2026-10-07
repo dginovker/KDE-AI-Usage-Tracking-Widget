@@ -896,7 +896,7 @@ def error_history(data, selected, rates):
     ongoing = [f"{text} ({rates[name][0]} of {rates[name][1]} lookups failed in 24h)" for name, text in current.items() if text]
     previous = [text for name, text, at in items if name in selected and error_signature(text) != error_signature(current.get(name, ""))]
     history_slots = max(0, 3 - len(ongoing))
-    return (previous[-history_slots:] if history_slots else []) + ongoing
+    return ((previous[-history_slots:] if history_slots else []) + ongoing)[-3:]
 def events_cache(provider): return CACHE / f"token-events-{provider}.jsonl.gz"
 def cached_lines(path):
     try:

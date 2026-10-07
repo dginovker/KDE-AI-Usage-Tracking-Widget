@@ -218,7 +218,7 @@ PlasmoidItem {
             const issue = cost(providers[index]).error;
             if (issue) values.push(issue);
         }
-        return values.join("\n");
+        return values.slice(-3).join("\n");
     }
     function providerList(claude, codex, kimi, grok, agy) {
         const names = ["claude", "codex", "kimi", "grok", "agy"], enabled = [claude, codex, kimi, grok, agy], selected = [];

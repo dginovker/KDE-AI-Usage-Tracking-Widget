@@ -1,4 +1,6 @@
 import io
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -9,6 +11,38 @@ from test_reset_info import snapshot
 
 
 class ErrorReportingTests(unittest.TestCase):
+    def test_more_than_three_ongoing_errors_are_capped(self):
+        selected = ['claude', 'codex', 'kimi', 'grok', 'agy']
+        data = {name: {'error': f'Oct 7 15:57 - {name}: lookup failed'} for name in selected}
+        rates = {name: (1, 1) for name in selected}
+        with tempfile.TemporaryDirectory() as directory, patch.object(snapshot, 'ERROR_CACHE', Path(directory) / 'errors.json'):
+            result = snapshot.error_history(data, selected, rates)
+            self.assertEqual(result, [data[name]['error'] + ' (1 of 1 lookups failed in 24h)' for name in selected[-3:]])
+            self.assertEqual(len(snapshot.load(snapshot.ERROR_CACHE)['items']), 5)
+
+    def test_widget_caps_combined_usage_agent_and_pricing_errors(self):
+        self.assertIsNotNone(shutil.which('node'), 'Node is required to test the widget JavaScript')
+        source = (Path(__file__).parents[1] / 'plasmoid/contents/ui/main.qml').read_text()
+        function = source[source.index('    function errors() {'):source.index('    function providerList(')]
+        script = f'''
+const assert = require('node:assert/strict');
+const snapshot = {{errors: ['Old Codex timeout', 'Claude DNS failure', 'Grok DNS failure']}};
+const providers = ['codex'];
+let lastError = '', agentsError = 'Agent counts unavailable';
+let pricingError = 'Codex pricing missing';
+function cost(name) {{ return {{error: pricingError}}; }}
+const Qt = {{formatTime: () => '22:00'}};
+{function}
+assert.deepEqual(errors().split('\\n'), ['Grok DNS failure', agentsError, pricingError]);
+lastError = 'No data';
+assert.deepEqual(errors().split('\\n'), ['22:00 - Widget: No data', agentsError, pricingError]);
+lastError = agentsError = pricingError = '';
+assert.deepEqual(errors().split('\\n'), snapshot.errors);
+snapshot.errors = [];
+assert.equal(errors(), '');
+'''
+        subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+
     def test_http_status_is_visible(self):
         for status in (429, 500, 503):
             with HTTPError('https://example.com', status, 'error', {}, None) as error:

@@ -151,7 +151,9 @@ def snapshot(proc=Path("/proc")):
         live = [session for session in sessions if session["pid"] in candidates]
         for pid, provider in candidates.items():
             if not any(session["pid"] == pid for session in live):
-                detail = "approve the AI Usage hook in /hooks and restart the session" if provider == "codex" else "live presence missing"
+                detail = {"codex": "approve the AI Usage hook in /hooks and restart the session",
+                          "pi": "live presence missing; run /reload in this Pi session to reconnect pi-intercom",
+                          "claude": "live presence missing"}[provider]
                 raise RuntimeError(f"{provider} PID {pid}: {detail}")
         return count_agents(live, proc)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, IndexError) as exc:

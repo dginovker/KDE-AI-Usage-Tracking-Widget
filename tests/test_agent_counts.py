@@ -79,6 +79,13 @@ class AgentCountsTests(unittest.TestCase):
         with patch.object(agents, "intercom_sessions", side_effect=OSError("broker unavailable")):
             self.assertEqual(agents.snapshot(self.proc), {"error": "Agent counts unavailable: broker unavailable"})
 
+    def test_missing_pi_presence_names_the_session_and_recovery_action(self):
+        with patch.object(agents, 'intercom_sessions', return_value=[]):
+            error = agents.snapshot(self.proc)['error']
+            self.assertIn('pi PID 30: live presence missing', error)
+            self.assertIn('run /reload in this Pi session', error)
+            self.assertIn('pi-intercom', error)
+
     def test_native_claude_busy_idle_waiting_and_shell_states(self):
         self.process(31, 20, "claude")
         for status, working in (("busy", 1), ("idle", 0), ("waiting", 0), ("shell", 1)):
