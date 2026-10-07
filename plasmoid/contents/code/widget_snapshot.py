@@ -4,7 +4,7 @@ from pathlib import Path
 from statistics import median
 from urllib import error, parse, request
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "ai-usage"
-HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE, CODEX_CACHE, AGY_CACHE = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json", "codex-usage.json", "agy-usage.json"))
+HISTORY_CACHE, ERROR_CACHE, TOKEN_CACHE, CODEX_CACHE, AGY_CACHE, LOOKUP_LOG = (CACHE / name for name in ("usage-history.json", "error-history.json", "token-stats.json", "codex-usage.json", "agy-usage.json", "lookup-log.jsonl"))
 PROVIDERS = ("claude", "codex", "kimi", "grok", "agy")
 TOKEN_WINDOWS = (("lifetime", None), ("30d", 30 * 86400), ("7d", 7 * 86400), ("24h", 86400), ("1h", 3600))
 COLORS = {"ok": "#27ae60", "near": "#fdbc4b", "under": "#3daee9"}
@@ -34,19 +34,25 @@ AGY_PRICES = {
 }
 KIMI_CLIENT_ID, KIMI_BASE_URL, KIMI_AUTH_HOST = "17e5f671-d194-4dfb-9706-5516cb48c098", "https://api.kimi.com/coding/v1", "https://auth.kimi.com"
 CLAUDE_CLIENT_ID, CLAUDE_API_URL, CLAUDE_TOKEN_URL = "9d1c250a-e61b-44d9-88ed-5944d1962f5e", "https://api.anthropic.com", "https://platform.claude.com/v1/oauth/token"
+# Cloudflare bans the default Python-urllib signature (error 1010) on platform.claude.com.
+CLAUDE_UA = "claude-cli/2.1.289 (external, cli) KDE-AI-Usage-Widget/1"
 GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 AGY_RPC = "/exa.language_server_pb.LanguageServerService/"
 RESET_API = "https://codex-reset.com/api/"
 RESET_HISTORY = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser() / "ai-usage/codex-resets.json"
 def now(): return dt.datetime.now().astimezone()
 def notice(provider, reason): return f"{now():%b %-d %H:%M} - {provider}: {reason}"
-def failure(provider, value):
+def failure(provider, value): return notice(provider, failure_reason(value))
+def failure_reason(value):
     code, text = getattr(value, "code", None), str(value).lower()
-    if code:
+    if isinstance(value, error.HTTPError):
         reason = {401: "unauthorized", 403: "forbidden", 429: "rate limited — too many requests"}.get(code, "HTTP request failed")
-        return notice(provider, f"{reason} ({code})")
-    reason = "unauthorized (401)" if code == 401 or "401" in text else "forbidden (403)" if code == 403 or "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else "usage lookup failed"
-    return notice(provider, reason)
+        body = value.read().decode(errors="replace")
+        try: body = json.loads(body)
+        except json.JSONDecodeError: detail = body.strip()[:120]
+        else: detail = body.get("error_name") or body.get("error_description") or dig(body, "error", "message") or body.get("error") if isinstance(body, dict) else ""
+        return f"{reason} ({code})" + (f": {detail}" if detail else "")
+    return "unauthorized (401)" if "401" in text else "forbidden (403)" if "403" in text else "usage lookup timed out" if isinstance(value, TimeoutError) or "timed out" in text else "network unavailable" if any(word in text for word in ("network", "connect", "resolve", "route", "dns")) else f"usage lookup failed: {value!r}"
 def number(value, integer=False):
     try: return int(value or 0) if integer else float(value)
     except (TypeError, ValueError): return 0 if integer else None
@@ -568,7 +574,8 @@ def claude_token(home, failed_token=None):
         if not refresh_token: raise RuntimeError("OAuth refresh token missing")
         if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes): raise RuntimeError("OAuth scopes missing")
         body = json.dumps({"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": CLAUDE_CLIENT_ID, "scope": " ".join(scopes)}).encode()
-        payload = http(CLAUDE_TOKEN_URL, {"Accept": "application/json", "Content-Type": "application/json"}, body, 30)
+        try: payload = http(CLAUDE_TOKEN_URL, {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": CLAUDE_UA}, body, 30)
+        except NETWORK_ERRORS as exc: raise RuntimeError("token refresh " + failure_reason(exc)) from exc
         token, expires_in = payload.get("access_token"), number(payload.get("expires_in"))
         if not token or not expires_in: raise RuntimeError("OAuth refresh returned incomplete credentials")
         current = load(path); current_credentials = current.get("claudeAiOauth")
@@ -614,7 +621,7 @@ def claude():
     try:
         token = claude_token(home)
         # Reset grants require Claude Code surface identification as well as the query flag.
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-cli/2.1.283 (external, cli) KDE-AI-Usage-Widget/1"}
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json", "anthropic-beta": "oauth-2025-04-20", "User-Agent": CLAUDE_UA}
         try: payload = http(CLAUDE_API_URL + "/api/oauth/usage?cedar_ember=1", headers, timeout=5)
         except error.HTTPError as exc:
             if exc.code != 401: raise
@@ -827,7 +834,17 @@ def compact(value):
     return str(value)
 def money(value): return f"${value:,.0f}"
 def error_signature(text): return re.sub(r" \([\d.]+s\)(?:;.*)?$", "", text.split(" - ", 1)[-1])
-def error_history(data, selected):
+def log_lookups(data, selected):
+    """Append one line per provider lookup (kept 7 days) and return each provider's 24h (failed, total) counts."""
+    stamp = time.time()
+    records = [json.loads(line) for line in LOOKUP_LOG.read_text().splitlines()] if LOOKUP_LOG.exists() else []
+    records = [record for record in records if record["at"] >= stamp - 7 * 86400]
+    records += [{"at": round(stamp), "time": now().isoformat(timespec="seconds"), "provider": name, "available": bool(data[name].get("available")), "error": data[name].get("error", "")} for name in selected]
+    tmp = LOOKUP_LOG.with_suffix(".tmp"); tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text("".join(json.dumps(record) + "\n" for record in records)); tmp.replace(LOOKUP_LOG)
+    recent = [record for record in records if record["at"] >= stamp - 86400]
+    return {name: (sum(1 for r in recent if r["provider"] == name and r["error"]), sum(1 for r in recent if r["provider"] == name)) for name in selected}
+def error_history(data, selected, rates):
     stored = load(ERROR_CACHE); items, active = stored.get("items", []), stored.get("active", {})
     cutoff = time.time() - 86400
     items = [item for item in items if isinstance(item, list) and len(item) == 3 and number(item[2], True) >= cutoff] if isinstance(items, list) else []
@@ -837,7 +854,7 @@ def error_history(data, selected):
         if text and active.get(name) != error_signature(text): items.append([name, text, int(time.time())])
     try: save(ERROR_CACHE, {"items": items[-20:], "active": {name: error_signature(text) for name, text in current.items() if text}})
     except OSError: pass
-    ongoing = [text for text in current.values() if text]
+    ongoing = [f"{text} ({rates[name][0]} of {rates[name][1]} lookups failed in 24h)" for name, text in current.items() if text]
     previous = [text for name, text, at in items if name in selected and error_signature(text) != error_signature(current.get(name, ""))]
     history_slots = max(0, 3 - len(ongoing))
     return (previous[-history_slots:] if history_slots else []) + ongoing
@@ -964,7 +981,7 @@ def snapshot():
         futures = {name: pool.submit(jobs[name]) for name in selected}
         data = {name: future.result() for name, future in futures.items()}
     data["tokens"] = token_stats(selected)
-    data["errors"] = error_history(data, selected)
+    data["errors"] = error_history(data, selected, log_lookups(data, selected))
     update_history(data, history)
     print(json.dumps(data, separators=(",", ":")))
     return 0

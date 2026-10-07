@@ -22,6 +22,9 @@ an explicit missing-state error. No model or provider settings are changed.
 <img width="893" height="697" alt="image" src="https://github.com/user-attachments/assets/cf362d17-ac09-420f-bcfc-4d21e4a9bf6c" />
 
 Codex's center number turns light cyan while a fresh reset announcement is active.
+Every usage lookup is logged per provider (with the full error text) to
+`~/.cache/ai-usage/lookup-log.jsonl` for 7 days; ongoing errors show the 24h failure count.
+
 Local weekly quota reset tracking starts after installation and records a reset when
 usage drops and the weekly reset deadline advances by more than a minute. The widget
 shows the interval between the two successful API readings, normally about ten minutes
