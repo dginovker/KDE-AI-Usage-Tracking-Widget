@@ -139,11 +139,6 @@ PlasmoidItem {
                                 PlasmaComponents3.Label { text: modelData.cost; opacity: 0.8 }
                             }
                         }
-                        PlasmaComponents3.Label {
-                            visible: Boolean(costPanel.totals.note)
-                            text: costPanel.totals.note || ""; color: "#fdbc4b"
-                            wrapMode: Text.WordWrap; Layout.fillWidth: true
-                        }
                     }
                 }
             }

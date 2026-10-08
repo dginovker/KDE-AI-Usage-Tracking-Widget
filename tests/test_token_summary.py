@@ -18,14 +18,13 @@ class TokenSummaryTests(unittest.TestCase):
         self.assertEqual(row['tokens'], '1.0K')
         self.assertEqual(row['cost'], 'Unavailable')
         self.assertEqual(row['models'], [{'name': 'codex-auto-review', 'cost': 'Price unknown'}])
-        self.assertEqual(row['note'], '1.0K tokens lack cost data')
+        self.assertNotIn('note', row)
         self.assertEqual(row['error'], 'Codex API equivalent (24h): codex-auto-review: pricing missing')
 
     def test_known_model_has_complete_total(self):
         values = {'tokens': 1000000, 'input': 900000, 'cached': 100000, 'output': 100000}
         row = self.summarize('codex', {'gpt-6-sol': values})
         self.assertEqual(row['cost'], '$2.62')
-        self.assertEqual(row['note'], '')
         self.assertEqual(row['error'], '')
 
     def test_native_gpt61_sol_uses_published_rates(self):
@@ -52,7 +51,6 @@ class TokenSummaryTests(unittest.TestCase):
         row = self.summarize('codex', {'gpt-6-sol': values})
         self.assertEqual(row['cost'], '$2.62+ (partial)')
         self.assertEqual(row['models'][0]['cost'], '$2.62+ (partial)')
-        self.assertEqual(row['note'], '1.0M tokens lack cost data')
         self.assertIn('breakdown missing for 1.0M tokens', row['error'])
 
     def test_known_and_unknown_models_show_only_a_partial_subtotal(self):
@@ -86,6 +84,7 @@ class TokenSummaryTests(unittest.TestCase):
     def test_bottom_right_errors_follow_selected_window(self):
         self.assertIsNotNone(shutil.which('node'), 'Node is required to test the widget JavaScript')
         source = (Path(__file__).parents[1] / 'plasmoid/contents/ui/main.qml').read_text()
+        self.assertNotIn('totals.note', source)
         errors = source[source.index('    function errors() {'):source.index('    function providerList(')]
         cost = source[source.index('    function cost(name) {'):source.rindex('\n}')]
         missing = {'tokens': 4244785, 'input': 0, 'cached': 0, 'output': 0}

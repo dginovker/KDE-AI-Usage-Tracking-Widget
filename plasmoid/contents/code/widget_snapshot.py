@@ -1002,7 +1002,6 @@ def summarize_tokens(providers):
             row["providers"][provider] = {
                 "tokens": compact(total), "cost": "Unavailable" if total and uncosted == total else money(cost) + ("+ (partial)" if uncosted else ""),
                 "models": [{"name": model, "cost": label} for model, _, label in models],
-                "note": f"{compact(uncosted)} tokens lack cost data" if uncosted else "",
                 "error": f"{provider.capitalize()} API equivalent ({key}): " + "; ".join(problems) if problems else "",
             }
         rows.append(row)

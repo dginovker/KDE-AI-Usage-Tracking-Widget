@@ -88,7 +88,6 @@ class PiTokenUsageTests(unittest.TestCase):
         windows = {key: {'unpriced-native-model': values} for key, _ in snapshot.TOKEN_WINDOWS}
         row = self.row({'codex': windows})
         self.assertEqual(row['cost'], '<$0.01+ (partial)')
-        self.assertEqual(row['note'], '3.0K tokens lack cost data')
 
     def test_claude_native_and_pi_import_share_response_id(self):
         usage = self.usage(input=1, output=100, cacheRead=1000, cacheWrite=100, totalTokens=1201, cost={'total': 0.01})
