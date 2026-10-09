@@ -82,9 +82,21 @@ class AgentCountsTests(unittest.TestCase):
 
     def test_missing_pi_presence_names_the_session_and_source(self):
         with patch.object(agents, 'pi_sessions', return_value=[]):
-            error = agents.snapshot(self.proc)['error']
-            self.assertIn('pi PID 30: live presence missing', error)
-            self.assertIn(agents.PI_DASHBOARD_SESSIONS, error)
+            result = agents.snapshot(self.proc)
+            self.assertEqual((result['working'], result['idle']), (0, 0))
+            self.assertIn('Agent counts incomplete', result['error'])
+            self.assertIn('pi PID 30: live presence missing', result['error'])
+            self.assertIn(agents.PI_DASHBOARD_SESSIONS, result['error'])
+
+    def test_missing_presence_preserves_other_live_counts(self):
+        self.process(31, 20, 'pi')
+        self.process(32, 20, 'pi')
+        with patch.object(agents, 'pi_sessions', return_value=[self.session(31), self.session(32, 'idle')]):
+            result = agents.snapshot(self.proc)
+        self.assertEqual((result['working'], result['idle']), (1, 1))
+        self.assertIn('pi PID 30: live presence missing', result['error'])
+        self.assertNotIn('pi PID 31', result['error'])
+        self.assertNotIn('pi PID 32', result['error'])
 
     def test_native_claude_busy_idle_waiting_and_shell_states(self):
         self.process(31, 20, "claude")
@@ -204,12 +216,18 @@ class AgentCountsTests(unittest.TestCase):
             [], {'success': False, 'data': []}, {'success': True, 'data': {}},
             {'success': True, 'data': [None]},
             *({'success': True, 'data': [{**row, **changes}]} for changes in (
-                {'status': 'unknown'}, {'status': 'ended'}, {'dataUnavailable': True},
+                {'status': 'unknown'}, {'dataUnavailable': True},
                 {'dataUnavailable': None}, {'compacting': 'true'},
             )),
         ):
             with self.subTest(payload=payload):
                 self.assertIn('Agent counts unavailable', self.dashboard_snapshot(payload)['error'])
+
+    def test_ended_record_for_running_process_reports_incomplete_counts(self):
+        row = {**self.session(status='ended'), 'dataUnavailable': False}
+        result = self.dashboard_snapshot({'success': True, 'data': [row]})
+        self.assertEqual((result['working'], result['idle']), (0, 0))
+        self.assertIn('Agent counts incomplete', result['error'])
 
     def test_dashboard_read_only_http_counts_agents_without_intercom(self):
         self.process(31, 20, 'pi')

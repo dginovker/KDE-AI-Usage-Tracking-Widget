@@ -33,13 +33,37 @@ let pricingError = 'Codex pricing missing';
 function cost(name) {{ return {{error: pricingError}}; }}
 const Qt = {{formatTime: () => '22:00'}};
 {function}
-assert.deepEqual(errors().split('\\n'), ['Grok DNS failure', agentsError, pricingError]);
+assert.deepEqual(errors().split('\\n'), ['Grok DNS failure', pricingError, agentsError]);
 lastError = 'No data';
-assert.deepEqual(errors().split('\\n'), ['22:00 - Widget: No data', agentsError, pricingError]);
+assert.deepEqual(errors().split('\\n'), ['22:00 - Widget: No data', pricingError, agentsError]);
 lastError = agentsError = pricingError = '';
 assert.deepEqual(errors().split('\\n'), snapshot.errors);
 snapshot.errors = [];
 assert.equal(errors(), '');
+'''
+        subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+
+    def test_widget_keeps_counts_with_missing_presence_error(self):
+        source = (Path(__file__).parents[1] / 'plasmoid/contents/ui/main.qml').read_text()
+        handler = source.split('id: agentsExecutable;', 1)[1].split('onNewData: function(sourceName, data) {', 1)[1].split('\n    Timer {', 1)[0]
+        handler = handler.rsplit('\n    }', 1)[0]
+        script = '''
+const assert = require('node:assert/strict');
+const root = {agentsSource: 'test'};
+function disconnectSource() {}
+function receive(sourceName, data) {
+''' + handler + '''
+receive('test', {stdout: JSON.stringify({working: 8, idle: 12, error: 'Missing PID 30'}), 'exit code': 0});
+assert.equal(root.agents.working, 8);
+assert.equal(root.agents.idle, 12);
+assert.equal(root.agentsError, 'Missing PID 30');
+root.agentsSource = 'test';
+receive('test', {stdout: JSON.stringify({working: 9, idle: 11}), 'exit code': 0});
+assert.equal(root.agentsError, '');
+root.agentsSource = 'test';
+receive('test', {stdout: JSON.stringify({error: 'Dashboard unavailable'}), 'exit code': 0});
+assert.equal(root.agents, null);
+assert.match(root.agentsError, /Dashboard unavailable/);
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
 

@@ -15,8 +15,9 @@ class ResetTrackingTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def observe(self, at, used, reset, account='account-a'):
-        return snapshot.track_codex_reset(account, {'used': used, 'reset': reset}, at)
+    def observe(self, at, used, reset, account='account-a', credits=3):
+        banked = None if credits is None else {'availableCount': credits}
+        return snapshot.track_codex_reset(account, {'used': used, 'reset': reset}, at, banked)
 
     def events(self, account='account-a'):
         return json.loads(self.path.read_text())[account]['events']
@@ -25,6 +26,7 @@ class ResetTrackingTests(unittest.TestCase):
         self.observe(1000, 62, 5000)
         result = self.observe(1600, 2, 600000)
         self.assertTrue(result.startswith('Last reset: '))
+        self.assertTrue(result.endswith('(free reset)'))
         self.assertEqual(self.events()[0]['kind'], 'early')
         event = self.events()[0]
         self.assertEqual((event['after'], event['by']), (1000, 1600))
@@ -34,8 +36,19 @@ class ResetTrackingTests(unittest.TestCase):
 
     def test_scheduled_boundary_in_gap_is_not_called_early(self):
         self.observe(1000, 62, 1500)
-        self.observe(1600, 2, 600000)
+        result = self.observe(1600, 2, 600000)
         self.assertEqual(self.events()[0]['kind'], 'scheduled window')
+        self.assertTrue(result.endswith('(weekly rollover or free reset)'))
+
+    def test_banked_credit_drop_marks_redemption(self):
+        self.observe(1000, 62, 5000, credits=3)
+        result = self.observe(1600, 2, 600000, credits=2)
+        self.assertTrue(result.endswith('(banked credit)'))
+        self.assertEqual((self.events()[0]['credits_before'], self.events()[0]['credits_after']), (3, 2))
+
+    def test_missing_banked_count_is_reported_not_guessed(self):
+        self.observe(1000, 62, 5000, credits=None)
+        self.assertTrue(self.observe(1600, 2, 600000).endswith('(cause unknown)'))
 
     def test_account_changes_do_not_create_resets(self):
         self.observe(1000, 62, 5000)

@@ -138,13 +138,16 @@ def snapshot(proc=Path("/proc")):
         if "codex" in candidates.values():
             sessions += native_sessions(codex_state_dir(), "codex", proc)
         live = [session for session in sessions if session["pid"] in candidates]
+        errors = []
         for pid, provider in candidates.items():
             if not any(session["pid"] == pid for session in live):
                 detail = {"codex": "approve the AI Usage hook in /hooks and restart the session",
                           "pi": f"live presence missing from Pi dashboard at {PI_DASHBOARD_SESSIONS}",
                           "claude": "live presence missing"}[provider]
-                raise RuntimeError(f"{provider} PID {pid}: {detail}")
-        return count_agents(live, proc)
+                errors.append(f"{provider} PID {pid}: {detail}")
+        counts = count_agents(live, proc)
+        if errors: counts["error"] = "Agent counts incomplete: " + "; ".join(errors)
+        return counts
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, IndexError) as exc:
         return {"error": f"Agent counts unavailable: {exc}"}
 

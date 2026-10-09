@@ -487,29 +487,37 @@ def codex_error(issue, attempts, elapsed):
     reason += f" ({elapsed:.1f}s)"
     if issue.get("stderr"): reason += "; " + issue["stderr"]
     return notice("Codex", reason)
-def track_codex_reset(account, weekly, observed_at):
+def reset_cause(previous, sample, kind):
+    if previous.get("credits") is None or sample["credits"] is None: return "cause unknown"
+    if sample["credits"] < previous["credits"]: return "banked credit"
+    return "free reset" if kind == "early" else "weekly rollover or free reset"
+def track_codex_reset(account, weekly, observed_at, credits):
     if not account: raise ValueError("account ID missing")
     sample = {"at": observed_at, "used": weekly.get("used"), "reset": weekly.get("reset")}
     if any(value is None or not math.isfinite(value) for value in sample.values()): raise ValueError("weekly quota observation incomplete")
+    sample["credits"] = number(dig(credits, "availableCount"))
     RESET_HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with Path(str(RESET_HISTORY) + ".lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         history = json.loads(RESET_HISTORY.read_text()) if RESET_HISTORY.exists() else {}
         state = history.setdefault(account, {"previous": None, "events": []})
         previous = state["previous"]
+        # Events recorded before banked counts were tracked have no cause to recover.
+        for event in state["events"]: event.setdefault("cause", "cause unknown")
         if previous and sample["at"] <= previous["at"]: return ""
         # Require both a quota drop and a moved weekly boundary to exclude small usage corrections.
         if previous and sample["used"] < previous["used"] and sample["reset"] > previous["reset"] + 60:
             kind = "early" if sample["at"] < previous["reset"] else "scheduled window" if previous["at"] < previous["reset"] <= sample["at"] else "uncertain timing"
-            state["events"].append({"after": previous["at"], "by": sample["at"], "kind": kind,
+            state["events"].append({"after": previous["at"], "by": sample["at"], "kind": kind, "cause": reset_cause(previous, sample, kind),
                                     "used_before": previous["used"], "used_after": sample["used"],
+                                    "credits_before": previous.get("credits"), "credits_after": sample["credits"],
                                     "previous_reset": previous["reset"], "next_reset": sample["reset"]})
         state["previous"] = sample
         save(RESET_HISTORY, history, 0o600)
         if not state["events"]: return ""
         event = state["events"][-1]
         end = moment(event["by"]).strftime("%H:%M") if moment(event["after"]).date() == moment(event["by"]).date() else short_time(event["by"])
-        return f"Last reset: {short_time(event['after'])}–{end}"
+        return f"Last reset: {short_time(event['after'])}–{end} ({event['cause']})"
 def codex_usage():
     home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     auth = load(home / "auth.json"); tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
@@ -535,7 +543,7 @@ def codex_usage():
         try: save(CODEX_CACHE, cached, 0o600)
         except OSError as exc: return codex_provider(windows, credits, error_text=notice("Codex", f"cache write failed ({exc.errno})"))
         data = codex_provider(windows, credits)
-        try: data["observed_reset"] = track_codex_reset(account, data["weekly"], cached["observed_at"])
+        try: data["observed_reset"] = track_codex_reset(account, data["weekly"], cached["observed_at"], credits)
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             data["error"] = notice("Codex", f"reset tracking failed: {exc}")
         return data

@@ -12,9 +12,8 @@ PlasmoidItem {
     readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_snapshot.py").toString().replace("file://", ""))
     readonly property string agentsHelperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_agents.py").toString().replace("file://", ""))
     property var agents: null; property string agentsError: ""; property string agentsSource: ""
-    readonly property string usageTitle: agentsError ? i18n("AI Usage - agent counts unavailable")
-        : agents ? i18n("AI Usage - %1 agents working - %2 agents idle", agents.working, agents.idle)
-        : i18n("AI Usage - agent counts loading")
+    readonly property string usageTitle: agents ? i18n("AI Usage - %1 agents working - %2 agents idle", agents.working, agents.idle)
+        : i18n("AI Usage")
     readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi, Plasmoid.configuration.showGrok, Plasmoid.configuration.showAgy)
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
@@ -172,10 +171,9 @@ PlasmoidItem {
             disconnectSource(sourceName); root.agentsSource = "";
             try {
                 const counts = JSON.parse(data.stdout || "");
-                if (counts.error) throw new Error(counts.error);
                 if (data["exit code"] !== 0 || !Number.isInteger(counts.working) || counts.working < 0
-                    || !Number.isInteger(counts.idle) || counts.idle < 0) throw new Error("Invalid Pi agent counts");
-                root.agents = counts; root.agentsError = "";
+                    || !Number.isInteger(counts.idle) || counts.idle < 0) throw new Error(counts.error || "Invalid agent counts");
+                root.agents = counts; root.agentsError = counts.error || "";
             } catch (error) {
                 root.agents = null; root.agentsError = String(error);
             }
@@ -208,11 +206,11 @@ PlasmoidItem {
     function errors() {
         const values = (snapshot.errors || []).slice();
         if (lastError) values.push(Qt.formatTime(new Date(), "HH:mm") + " - Widget: " + lastError);
-        if (agentsError) values.push(agentsError);
         for (let index = 0; index < providers.length; index++) {
             const issue = cost(providers[index]).error;
             if (issue) values.push(issue);
         }
+        if (agentsError) values.push(agentsError);
         return values.slice(-3).join("\n");
     }
     function providerList(claude, codex, kimi, grok, agy) {

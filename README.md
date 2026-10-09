@@ -5,8 +5,10 @@ Taskbar widget visual to help maximize your AI subscription usage :)
 The title refreshes every five seconds with working/idle counts for main Pi,
 Claude Code, and Codex CLI agents attached to Konsole. Linux process ancestry
 excludes subagents, headless agents, orphaned processes, and non-Konsole sessions.
-Waiting for user input or permission counts as idle. Failed or missing state
-shows “agent counts unavailable” with the error, not zero or stale counts.
+Waiting for user input or permission counts as idle. A process missing live state is
+excluded from the working/idle counts and reported in the bottom-right error area;
+other agents still count. A failed lookup also reports there, with no counts in the
+title rather than invented or stale totals.
 
 Pi counts use the existing local Pi Dashboard at `http://127.0.0.1:8040/api/sessions`,
 not Intercom membership: a messaging disconnect must not erase a running agent.
@@ -42,7 +44,10 @@ shows the interval between the two successful API readings, normally about ten m
 apart, under “Last reset.” Sleep and failed requests widen that interval; resets with no observed usage
 drop can be missed. In the saved history, “early” means the change was observed before the previous deadline;
 “scheduled window” means the observation interval includes that deadline, so the cause
-is still uncertain. Neither identifies a global reset versus a banked reset redemption.
+is still uncertain. The cause in parentheses comes from the banked reset-credit count: “banked
+credit” when it dropped across the interval (a `/usage` redemption), “free reset” when it did
+not and the change was early, “weekly rollover or free reset” when the scheduled deadline
+fell inside the interval, and “cause unknown” when the banked count was unavailable.
 Account-separated observations and reset events are saved in
 `$XDG_DATA_HOME/ai-usage/codex-resets.json` (normally
 `~/.local/share/ai-usage/codex-resets.json`) for later timing analysis. Cached readings
