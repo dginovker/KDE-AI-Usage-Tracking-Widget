@@ -1004,11 +1004,11 @@ def summarize_tokens(providers):
                     problems.append(f"{model}: input/output/cache breakdown missing for {compact(missing)} tokens" if provider == "codex" else f"{model}: cost data missing for {compact(missing)} tokens")
                 uncosted += missing
                 if estimate is not None: cost += estimate
-                label = "Price unknown" if estimate is None else "Unavailable" if missing == tokens else money(estimate) + ("+ (partial)" if missing else "")
+                label = "Price unknown" if estimate is None else "Unavailable" if missing == tokens else money(estimate) + ("+" if missing else "")
                 models.append((model, estimate, label))
             models.sort(key=lambda item: (item[1] is None, -(item[1] or 0), item[0]))
             row["providers"][provider] = {
-                "tokens": compact(total), "cost": "Unavailable" if total and uncosted == total else money(cost) + ("+ (partial)" if uncosted else ""),
+                "tokens": compact(total), "cost": "Unavailable" if total and uncosted == total else money(cost) + ("+" if uncosted else ""),
                 "models": [{"name": model, "cost": label} for model, _, label in models],
                 "error": f"{provider.capitalize()} API equivalent ({key}): " + "; ".join(problems) if problems else "",
             }

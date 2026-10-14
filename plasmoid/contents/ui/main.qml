@@ -13,7 +13,7 @@ PlasmoidItem {
     readonly property string agentsHelperPath: decodeURIComponent(Qt.resolvedUrl("../code/widget_agents.py").toString().replace("file://", ""))
     property var agents: null; property string agentsError: ""; property string agentsSource: ""
     readonly property string usageTitle: agents ? i18n("AI Usage - %1 agents working - %2 agents idle", agents.working, agents.idle)
-        : i18n("AI Usage")
+        : agentsError ? i18n("AI Usage - agent counts unavailable") : i18n("AI Usage")
     readonly property var providers: providerList(Plasmoid.configuration.showClaude, Plasmoid.configuration.showCodex, Plasmoid.configuration.showKimi, Plasmoid.configuration.showGrok, Plasmoid.configuration.showAgy)
     readonly property var apiWindows: ["24h", "7d", "30d", "lifetime"]
     property string apiWindow: "30d"; property string activeSource: ""
@@ -171,7 +171,9 @@ PlasmoidItem {
             disconnectSource(sourceName); root.agentsSource = "";
             try {
                 const counts = JSON.parse(data.stdout || "");
-                if (data["exit code"] !== 0 || !Number.isInteger(counts.working) || counts.working < 0
+                // Exit 1 also reports incomplete presence; verified counts remain usable with the error visible.
+                if ((data["exit code"] !== 0 && !(data["exit code"] === 1 && counts.error))
+                    || !Number.isInteger(counts.working) || counts.working < 0
                     || !Number.isInteger(counts.idle) || counts.idle < 0) throw new Error(counts.error || "Invalid agent counts");
                 root.agents = counts; root.agentsError = counts.error || "";
             } catch (error) {

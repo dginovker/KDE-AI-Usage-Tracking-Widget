@@ -53,7 +53,7 @@ const root = {agentsSource: 'test'};
 function disconnectSource() {}
 function receive(sourceName, data) {
 ''' + handler + '''
-receive('test', {stdout: JSON.stringify({working: 8, idle: 12, error: 'Missing PID 30'}), 'exit code': 0});
+receive('test', {stdout: JSON.stringify({working: 8, idle: 12, error: 'Missing PID 30'}), 'exit code': 1});
 assert.equal(root.agents.working, 8);
 assert.equal(root.agents.idle, 12);
 assert.equal(root.agentsError, 'Missing PID 30');
@@ -61,9 +61,39 @@ root.agentsSource = 'test';
 receive('test', {stdout: JSON.stringify({working: 9, idle: 11}), 'exit code': 0});
 assert.equal(root.agentsError, '');
 root.agentsSource = 'test';
-receive('test', {stdout: JSON.stringify({error: 'Dashboard unavailable'}), 'exit code': 0});
+receive('test', {stdout: JSON.stringify({error: 'Dashboard unavailable'}), 'exit code': 1});
 assert.equal(root.agents, null);
 assert.match(root.agentsError, /Dashboard unavailable/);
+for (const data of [
+    {stdout: '{broken', 'exit code': 1},
+    {stdout: '', stderr: 'Python failed', 'exit code': 1},
+    {stdout: JSON.stringify({working: 9, idle: 11}), 'exit code': 1},
+    {stdout: JSON.stringify({working: 9, idle: 11, error: 'Crashed'}), 'exit code': 2},
+    {stdout: JSON.stringify({working: -1, idle: 11, error: 'Invalid'}), 'exit code': 1},
+]) {
+    root.agentsSource = 'test';
+    receive('test', data);
+    assert.equal(root.agents, null);
+    assert.ok(root.agentsError);
+}
+'''
+        subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+
+    def test_agent_title_keeps_lookup_errors_out_of_counts(self):
+        source = (Path(__file__).parents[1] / 'plasmoid/contents/ui/main.qml').read_text()
+        expression = source.split('readonly property string usageTitle: ', 1)[1].split('\n    readonly property var providers:', 1)[0]
+        script = f'''
+const assert = require('node:assert/strict');
+let agents = null, agentsError = '';
+function i18n(text, ...args) {{ return text.replace(/%(\\d)/g, (_, n) => args[n - 1]); }}
+function title() {{ return {expression}; }}
+assert.equal(title(), 'AI Usage');
+agentsError = 'Dashboard unavailable';
+assert.equal(title(), 'AI Usage - agent counts unavailable');
+agents = {{working: 8, idle: 12}};
+assert.equal(title(), 'AI Usage - 8 agents working - 12 agents idle');
+agentsError = '';
+assert.equal(title(), 'AI Usage - 8 agents working - 12 agents idle');
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
 

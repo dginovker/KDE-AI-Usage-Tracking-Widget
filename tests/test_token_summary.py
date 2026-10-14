@@ -49,14 +49,14 @@ class TokenSummaryTests(unittest.TestCase):
     def test_cached_aggregate_with_missing_breakdowns_is_partial(self):
         values = {'tokens': 2000000, 'input': 900000, 'cached': 100000, 'output': 100000}
         row = self.summarize('codex', {'gpt-6-sol': values})
-        self.assertEqual(row['cost'], '$2.62+ (partial)')
-        self.assertEqual(row['models'][0]['cost'], '$2.62+ (partial)')
+        self.assertEqual(row['cost'], '$2.62+')
+        self.assertEqual(row['models'][0]['cost'], '$2.62+')
         self.assertIn('breakdown missing for 1.0M tokens', row['error'])
 
     def test_known_and_unknown_models_show_only_a_partial_subtotal(self):
         values = {'tokens': 1000000, 'input': 900000, 'cached': 100000, 'output': 100000}
         row = self.summarize('codex', {'gpt-6-sol': values, 'unpriced-model': values})
-        self.assertEqual(row['cost'], '$2.62+ (partial)')
+        self.assertEqual(row['cost'], '$2.62+')
         self.assertIn('unpriced-model: pricing missing', row['error'])
 
     def test_claude_cents_are_not_rounded_to_zero(self):
@@ -78,7 +78,7 @@ class TokenSummaryTests(unittest.TestCase):
 
     def test_reported_grok_cost_can_be_partial(self):
         row = self.summarize('grok', {'grok-4.5': {'tokens': 2000, 'cost': 0.12, 'uncosted': 1000}})
-        self.assertEqual(row['cost'], '$0.12+ (partial)')
+        self.assertEqual(row['cost'], '$0.12+')
         self.assertIn('cost data missing for 1.0K tokens', row['error'])
 
     def test_bottom_right_errors_follow_selected_window(self):

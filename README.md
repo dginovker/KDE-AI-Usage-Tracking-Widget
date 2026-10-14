@@ -7,8 +7,9 @@ Claude Code, and Codex CLI agents attached to Konsole. Linux process ancestry
 excludes subagents, headless agents, orphaned processes, and non-Konsole sessions.
 Waiting for user input or permission counts as idle. A process missing live state is
 excluded from the working/idle counts and reported in the bottom-right error area;
-other agents still count. A failed lookup also reports there, with no counts in the
-title rather than invented or stale totals.
+other agents still count without warning labels in the title. A failed lookup also
+reports there and shows “agent counts unavailable” in the title rather than
+invented or stale totals.
 
 Pi counts use the existing local Pi Dashboard at `http://127.0.0.1:8040/api/sessions`,
 not Intercom membership: a messaging disconnect must not erase a running agent.
@@ -37,6 +38,8 @@ IDs prevent forks and imported Claude copies from being counted twice. Codex's
 external-import registry excludes replayed conversations from Codex usage entirely:
 importing a transcript is not a new API call. Missing pricing or billing counters
 appear in the bottom-right error area rather than as a zero-dollar estimate.
+When only some costs are known, a trailing `+` marks the known subtotal; cost labels
+never include “(partial)”.
 
 Local weekly quota reset tracking starts after installation and records a reset when
 usage drops and the weekly reset deadline advances by more than a minute. The widget
