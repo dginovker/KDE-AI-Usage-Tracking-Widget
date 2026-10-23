@@ -12,14 +12,32 @@ from urllib.request import ProxyHandler, Request, build_opener
 PI_DASHBOARD_SESSIONS = "http://127.0.0.1:8040/api/sessions"
 
 
-def pi_sessions(proc=Path("/proc")):
-    # The dashboard observes Pi lifecycle directly; an Intercom disconnect is not an idle agent.
+PI_SESSIONS_MAX_AGE = 4.5
+
+
+def dashboard_sessions_gzip():
+    # The widget and Click Analytics each poll every 5 s; one tunnel fetch of the roster serves both.
+    cache = Path(os.environ["XDG_RUNTIME_DIR"]) / "ai-usage-pi-sessions.json.gz"
+    try:
+        if time.time() - cache.stat().st_mtime < PI_SESSIONS_MAX_AGE:
+            return cache.read_bytes()
+    except FileNotFoundError:
+        pass
     request = Request(PI_DASHBOARD_SESSIONS, headers={"Accept-Encoding": "gzip"})
     with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
         # The roster is ~2 MB uncompressed and is polled every 5 s over the VPS tunnel.
         if response.headers.get("Content-Encoding") != "gzip":
             raise ValueError("Pi dashboard sessions response is not gzip-encoded")
-        payload = json.loads(gzip.decompress(response.read()))
+        body = response.read()
+    temporary = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(body)
+    temporary.replace(cache)
+    return body
+
+
+def pi_sessions(proc=Path("/proc")):
+    # The dashboard observes Pi lifecycle directly; an Intercom disconnect is not an idle agent.
+    payload = json.loads(gzip.decompress(dashboard_sessions_gzip()))
     if not isinstance(payload, dict) or payload.get("success") is not True or not isinstance(payload.get("data"), list):
         raise ValueError("Invalid Pi dashboard sessions response")
     result = []

@@ -21,6 +21,10 @@ class AgentCountsTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.proc = Path(self.directory.name)
+        runtime = patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.proc)})
+        runtime.start()
+        self.addCleanup(runtime.stop)
+        self.roster_cache = self.proc / "ai-usage-pi-sessions.json.gz"
         self.process(10, 1, "konsole", tty=0)
         self.process(20, 10, "zsh")
         self.process(30, 20, "pi")
@@ -197,6 +201,7 @@ class AgentCountsTests(unittest.TestCase):
         self.assertEqual(json.loads(backups[0].read_text()), original)
 
     def dashboard_snapshot(self, payload):
+        self.roster_cache.unlink(missing_ok=True)
         with patch.object(agents, 'build_opener') as opener:
             opener.return_value.open.return_value.__enter__.return_value = addinfourl(io.BytesIO(gzip.compress(json.dumps(payload).encode())), {'Content-Encoding': 'gzip'}, '')
             return agents.snapshot(self.proc)
@@ -263,6 +268,9 @@ class AgentCountsTests(unittest.TestCase):
                     records = agents.pi_sessions(self.proc)
                     self.assertEqual(agents.count_agents(records, self.proc), {'working': 1, 'idle': 1})
                     self.assertEqual({r['pid'] for r in records}, {30, 31})
+                    self.assertEqual(agents.pi_sessions(self.proc), records)
+                    self.assertEqual(len(requests), 1, 'A fresh roster must be shared, not refetched')
+                    os.utime(self.roster_cache, (0, 0))
                     compress[0] = False
                     with self.assertRaisesRegex(ValueError, 'not gzip-encoded'):
                         agents.pi_sessions(self.proc)
