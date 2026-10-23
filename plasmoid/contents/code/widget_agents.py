@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+import gzip
 import json
 import os
 from pathlib import Path
 import shlex
 import sys
 import time
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 
 PI_DASHBOARD_SESSIONS = "http://127.0.0.1:8040/api/sessions"
@@ -13,8 +14,12 @@ PI_DASHBOARD_SESSIONS = "http://127.0.0.1:8040/api/sessions"
 
 def pi_sessions(proc=Path("/proc")):
     # The dashboard observes Pi lifecycle directly; an Intercom disconnect is not an idle agent.
-    with build_opener(ProxyHandler({})).open(PI_DASHBOARD_SESSIONS, timeout=3) as response:
-        payload = json.load(response)
+    request = Request(PI_DASHBOARD_SESSIONS, headers={"Accept-Encoding": "gzip"})
+    with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+        # The roster is ~2 MB uncompressed and is polled every 5 s over the VPS tunnel.
+        if response.headers.get("Content-Encoding") != "gzip":
+            raise ValueError("Pi dashboard sessions response is not gzip-encoded")
+        payload = json.loads(gzip.decompress(response.read()))
     if not isinstance(payload, dict) or payload.get("success") is not True or not isinstance(payload.get("data"), list):
         raise ValueError("Invalid Pi dashboard sessions response")
     result = []

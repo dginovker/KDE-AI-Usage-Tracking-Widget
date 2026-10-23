@@ -1,3 +1,4 @@
+import gzip
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from urllib.response import addinfourl
 
 spec = importlib.util.spec_from_file_location("widget_agents", Path(__file__).resolve().parents[1] / "plasmoid/contents/code/widget_agents.py")
 agents = importlib.util.module_from_spec(spec)
@@ -196,7 +198,7 @@ class AgentCountsTests(unittest.TestCase):
 
     def dashboard_snapshot(self, payload):
         with patch.object(agents, 'build_opener') as opener:
-            opener.return_value.open.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            opener.return_value.open.return_value.__enter__.return_value = addinfourl(io.BytesIO(gzip.compress(json.dumps(payload).encode())), {'Content-Encoding': 'gzip'}, '')
             return agents.snapshot(self.proc)
 
     def test_dashboard_lifecycle_questions_and_compaction(self):
@@ -236,14 +238,18 @@ class AgentCountsTests(unittest.TestCase):
         rows = [{**self.session(pid, status), 'dataUnavailable': False} for pid, status in (
             (30, 'streaming'), (31, 'idle'), (32, 'streaming'), (33, 'unknown'), (999, 'streaming'),
         )]
-        requests = []
+        requests, compress = [], [True]
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                requests.append((self.command, self.path))
+                requests.append((self.command, self.path, self.headers.get('Accept-Encoding')))
+                body = json.dumps({'success': True, 'data': rows}).encode()
                 self.send_response(200)
+                if compress[0]:
+                    body = gzip.compress(body)
+                    self.send_header('Content-Encoding', 'gzip')
                 self.end_headers()
-                self.wfile.write(json.dumps({'success': True, 'data': rows}).encode())
+                self.wfile.write(body)
 
             def log_message(self, *args):
                 pass
@@ -257,11 +263,14 @@ class AgentCountsTests(unittest.TestCase):
                     records = agents.pi_sessions(self.proc)
                     self.assertEqual(agents.count_agents(records, self.proc), {'working': 1, 'idle': 1})
                     self.assertEqual({r['pid'] for r in records}, {30, 31})
+                    compress[0] = False
+                    with self.assertRaisesRegex(ValueError, 'not gzip-encoded'):
+                        agents.pi_sessions(self.proc)
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
-        self.assertEqual(requests, [('GET', '/api/sessions')])
+        self.assertEqual(requests, [('GET', '/api/sessions', 'gzip')] * 2)
 
 
 if __name__ == "__main__":
